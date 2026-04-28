@@ -525,7 +525,14 @@ while ($true) {
     # ── 1. LC2 daemon ──────────────────────────────────────────────────────────
     $lc2Proc = Get-LC2ManagedProcesses
     $lc2RpcOk = $false
-    if (-not $lc2Proc -or $lc2Proc.Count -eq 0) {
+    if (Test-RpcAlive 9222 'lc2rpc' '7ezB1EwlQf4iKJGba85ymAgo') {
+        $lc2RpcOk = $true
+        if ($lc2Proc -and $lc2Proc.Count -gt 0) {
+            Write-Log "OK: LC2 daemon alive (PID $((@($lc2Proc)[0]).ProcessId), RPC responsive)"
+        } else {
+            Write-Log "OK: LC2 RPC responsive (process metadata unavailable or external daemon)."
+        }
+    } elseif (-not $lc2Proc -or $lc2Proc.Count -eq 0) {
         Write-Log "ALERT: LC2 daemon not running — restarting."
         Start-LC2Daemon
         $lc2RpcOk = Test-RpcAlive 9222 'lc2rpc' '7ezB1EwlQf4iKJGba85ymAgo'
@@ -535,15 +542,19 @@ while ($true) {
         Start-Sleep 3
         Start-LC2Daemon
         $lc2RpcOk = Test-RpcAlive 9222 'lc2rpc' '7ezB1EwlQf4iKJGba85ymAgo'
-    } else {
-        $lc2RpcOk = $true
-        Write-Log "OK: LC2 daemon alive (PID $((@($lc2Proc)[0]).ProcessId))"
     }
 
     # ── 2. DOGE2 daemon ────────────────────────────────────────────────────────
     $doge2Proc = Get-Doge2ManagedProcesses
     $doge2RpcOk = $false
-    if (-not $doge2Proc -or $doge2Proc.Count -eq 0) {
+    if (Test-RpcAlive $Doge2RpcPort $Doge2RpcUser $Doge2RpcPass) {
+        $doge2RpcOk = $true
+        if ($doge2Proc -and $doge2Proc.Count -gt 0) {
+            Write-Log "OK: DOGE2 daemon alive (PID $((@($doge2Proc)[0]).ProcessId), RPC responsive)"
+        } else {
+            Write-Log "OK: DOGE2 RPC responsive (process metadata unavailable or external daemon)."
+        }
+    } elseif (-not $doge2Proc -or $doge2Proc.Count -eq 0) {
         Write-Log "ALERT: DOGE2 daemon not running — restarting."
         Start-Doge2Daemon
         $doge2RpcOk = Test-RpcAlive $Doge2RpcPort $Doge2RpcUser $Doge2RpcPass
@@ -553,9 +564,6 @@ while ($true) {
         Start-Sleep 3
         Start-Doge2Daemon
         $doge2RpcOk = Test-RpcAlive $Doge2RpcPort $Doge2RpcUser $Doge2RpcPass
-    } else {
-        $doge2RpcOk = $true
-        Write-Log "OK: DOGE2 daemon alive (PID $((@($doge2Proc)[0]).ProcessId))"
     }
 
     # ── 3. Stratum proxy — check only this app's managed proxy/ports ───────────
