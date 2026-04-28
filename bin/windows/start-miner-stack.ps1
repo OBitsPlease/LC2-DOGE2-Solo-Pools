@@ -80,12 +80,16 @@ $RuntimeRoot = if ($env:LOCALAPPDATA) {
 }
 
 $RuntimeDataDir = Join-Path $RuntimeRoot 'data'
+$RuntimeLogDir = Join-Path $RuntimeRoot 'logs'
 $SummaryPath = Join-Path $RuntimeDataDir 'startup-summary.json'
 $InfoPath = Join-Path $RuntimeRoot 'MINER-CONNECTION-INFO.txt'
 $StatusPath = Join-Path $RuntimeRoot 'RUNTIME-STATUS.txt'
 
 if (-not (Test-Path $RuntimeDataDir)) {
     New-Item -ItemType Directory -Path $RuntimeDataDir -Force | Out-Null
+}
+if (-not (Test-Path $RuntimeLogDir)) {
+    New-Item -ItemType Directory -Path $RuntimeLogDir -Force | Out-Null
 }
 
 Write-Bootstrap "ProjectRoot=$ProjectRoot"
@@ -107,8 +111,8 @@ Status:
 - This can take 30-180 seconds on first run.
 
 If startup takes too long, check:
-- %TEMP%\watchdog.log
-- %TEMP%\proxy-err.log
+- $RuntimeLogDir\watchdog.log
+- $RuntimeLogDir\proxy-err.log
 ========================================================================
 "@
 
@@ -217,8 +221,8 @@ try {
 $dashReachable = Test-TcpPortOpen -targetHost $dashHost -port $dashPort
 
 if ($startedCoins -eq 0 -or -not $dashReachable) {
-    $watchdogLog = [System.IO.Path]::Combine((Get-TempRoot), 'watchdog.log')
-    $proxyErrLog = [System.IO.Path]::Combine((Get-TempRoot), 'proxy-err.log')
+    $watchdogLog = Join-Path $RuntimeLogDir 'watchdog.log'
+    $proxyErrLog = Join-Path $RuntimeLogDir 'proxy-err.log'
 
     $failureInfo = @"
 ========================================================================

@@ -43,13 +43,6 @@ $Doge2RpcPort = 22655
 $Doge2RpcUser = 'doge2rpc'
 $Doge2RpcPass = 'Doge2RpcPass2026!'
 $ProxyExe    = "$ProxyDir\dist\lc2-solo-proxy-windows.exe"
-$LogFile     = "$env:TEMP\watchdog.log"
-$ProxyOut    = "$env:TEMP\proxy-out.log"
-$ProxyErr    = "$env:TEMP\proxy-err.log"
-$Lc2Out      = "$env:TEMP\lc2-out.log"
-$Lc2Err      = "$env:TEMP\lc2-err.log"
-$Doge2Out    = "$env:TEMP\doge2-out.log"
-$Doge2Err    = "$env:TEMP\doge2-err.log"
 $RuntimeRoot = if ($env:LOCALAPPDATA) {
     Join-Path $env:LOCALAPPDATA 'LC2 DOGE2 Solo Miner'
 } elseif ($env:APPDATA) {
@@ -57,6 +50,19 @@ $RuntimeRoot = if ($env:LOCALAPPDATA) {
 } else {
     $ProxyDir
 }
+$RuntimeLogDir = Join-Path $RuntimeRoot 'logs'
+if (-not (Test-Path $RuntimeLogDir)) {
+    New-Item -ItemType Directory -Path $RuntimeLogDir -Force | Out-Null
+}
+$LogFile     = Join-Path $RuntimeLogDir 'watchdog.log'
+$ProxyOut    = Join-Path $RuntimeLogDir 'proxy-out.log'
+$ProxyErr    = Join-Path $RuntimeLogDir 'proxy-err.log'
+$Lc2Out      = Join-Path $RuntimeLogDir 'lc2-out.log'
+$Lc2Err      = Join-Path $RuntimeLogDir 'lc2-err.log'
+$Doge2Out    = Join-Path $RuntimeLogDir 'doge2-out.log'
+$Doge2Err    = Join-Path $RuntimeLogDir 'doge2-err.log'
+$Lc2DebugLog = Join-Path $RuntimeLogDir 'lc2-debug.log'
+$Doge2DebugLog = Join-Path $RuntimeLogDir 'doge2-debug.log'
 $StartupSummaryPath = Join-Path $RuntimeRoot 'data\startup-summary.json'
 $StatusPath = Join-Path $RuntimeRoot 'RUNTIME-STATUS.txt'
 
@@ -365,10 +371,12 @@ function Start-LC2Daemon {
         '-rpcport=9222',
         '-rpcuser=lc2rpc',
         '-rpcpassword=7ezB1EwlQf4iKJGba85ymAgo',
-        '-rpcallowip=127.0.0.1'
+        '-rpcallowip=127.0.0.1',
+        "-debuglogfile=$Lc2DebugLog"
     )
     $proc = Start-Process -FilePath $LC2Exe `
         -ArgumentList $lc2Args `
+        -WorkingDirectory ([System.IO.Path]::GetDirectoryName($LC2Exe)) `
         -WindowStyle Hidden `
         -RedirectStandardOutput $Lc2Out `
         -RedirectStandardError $Lc2Err `
@@ -404,10 +412,14 @@ function Start-Doge2Daemon {
         "-rpcport=$Doge2RpcPort",
         "-rpcuser=$Doge2RpcUser",
         "-rpcpassword=$Doge2RpcPass",
-        '-rpcallowip=127.0.0.1'
+        '-rpcallowip=127.0.0.1',
+        "-debuglogfile=$Doge2DebugLog"
     )
+    [System.IO.File]::AppendAllText($Doge2Out, "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Launching DOGE2 daemon`r`n")
+    [System.IO.File]::AppendAllText($Doge2Err, "[$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')] Launching DOGE2 daemon`r`n")
     $proc = Start-Process -FilePath $Doge2Exe `
         -ArgumentList $doge2Args `
+        -WorkingDirectory ([System.IO.Path]::GetDirectoryName($Doge2Exe)) `
         -WindowStyle Hidden `
         -RedirectStandardOutput $Doge2Out `
         -RedirectStandardError $Doge2Err `
