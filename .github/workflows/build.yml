@@ -1,0 +1,114 @@
+name: Build Installers
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install pkg
+        run: npm install -g pkg
+
+      - name: Build Windows executable
+        run: pkg src/index.js --target node18-win-x64 --output dist/lc2-solo-proxy-windows.exe
+
+      - name: Install Inno Setup
+        run: choco install innosetup -y
+
+      - name: Build Windows one-click installer
+        shell: powershell
+        run: |
+          $version = (Get-Content package.json | ConvertFrom-Json).version
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DAppVersion=$version" "installer\windows\LC2Doge2SoloMiner.iss"
+
+      - name: Upload Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lc2-solo-proxy-windows
+          path: |
+            dist/lc2-solo-proxy-windows.exe
+            dist/LC2-DOGE2-Solo-Miner-Setup.exe
+
+      - name: Release (on tag)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/lc2-solo-proxy-windows.exe
+            dist/LC2-DOGE2-Solo-Miner-Setup.exe
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install pkg
+        run: npm install -g pkg
+
+      - name: Build macOS executable
+        run: pkg src/index.js --target node18-macos-x64 --output dist/lc2-solo-proxy-macos
+
+      - name: Upload macOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lc2-solo-proxy-macos
+          path: dist/lc2-solo-proxy-macos
+
+      - name: Release (on tag)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/lc2-solo-proxy-macos
+
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install pkg
+        run: npm install -g pkg
+
+      - name: Build Linux executable
+        run: pkg src/index.js --target node18-linux-x64 --output dist/lc2-solo-proxy-linux
+
+      - name: Upload Linux artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lc2-solo-proxy-linux
+          path: dist/lc2-solo-proxy-linux
+
+      - name: Release (on tag)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/lc2-solo-proxy-linux

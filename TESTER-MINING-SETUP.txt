@@ -1,0 +1,125 @@
+========================================================================
+  LC2/DOGE2 SOLO MINER - CONNECTION GUIDE
+========================================================================
+
+This app is a merge-mining solo proxy for LC2 (parent) and DOGE2 (auxiliary).
+Rewards are sent to the configured mining addresses (see below).
+You can monitor mining activity via the web dashboard.
+
+========================================================================
+MINING ENDPOINTS (Local Testing)
+========================================================================
+
+LC2 Stratum (default):
+  Address: stratum+tcp://127.0.0.1:3333
+  Pool ID: lc2_solo1
+
+DOGE2 Stratum (default):
+  Address: stratum+tcp://127.0.0.1:3334
+  Pool ID: doge2_solo1
+
+IMPORTANT:
+If these ports are busy, the app auto-selects fallback ports.
+Always check MINER-CONNECTION-INFO.txt for the live endpoints in use.
+
+Merge-Mining: LC2 is parent chain; DOGE2 is merged via AuxPoW.
+Miners connect to BOTH endpoints independently.
+
+To verify setup is working:
+  1) Open MINER-CONNECTION-INFO.txt (live ports + dashboard URL)
+  2) Or check data/startup-summary.json for active ports
+
+========================================================================
+========================================================================
+MINER CONFIGURATION EXAMPLES
+========================================================================
+
+--- Example 1: cgminer / sgminer ---
+./cgminer -o stratum+tcp://127.0.0.1:3333 -u LC2_SOLO -p x
+
+--- Example 2: cpuminer-opt ---
+./cpuminer-opt -a scrypt -o stratum+tcp://127.0.0.1:3333 -u LC2_SOLO -p x
+
+--- Example 3: GPU Miner (AMD/NVIDIA) ---
+(Use Scrypt algorithm)
+Endpoint: stratum+tcp://127.0.0.1:3333
+Worker: any_username
+Password: x (or empty)
+
+========================================================================
+MONITORING MINING PROGRESS
+========================================================================
+
+1. DASHBOARD WEB UI:
+  URL: Use MINER-CONNECTION-INFO.txt (dashboard port may auto-change)
+   Features:
+     • Real-time share counts
+     • Block heights & difficulty
+     • Miner connections
+     • Mining address display
+     • Address management (set/generate new address)
+
+2. CONSOLE OUTPUT:
+   The app prints:
+     • Accepted shares per coin
+     • Rejected/stale share counts
+     • Connected miners
+     • New block notifications
+     • Block found status
+
+3. JSON DATA FILES (in data/ folder):
+     • shares.json — all accepted shares (timestamp, hash, difficulty)
+     • blocks.json — blocks found (height, hash, timestamp)
+     • workers.json — miner worker records
+     • payments.json — payout history (if implemented)
+     • pool_config.json — current mining addresses
+
+========================================================================
+FAQ FOR TESTERS
+========================================================================
+
+Q: Why do I see both LC2 and DOGE2 as separate endpoints?
+A: They're separate endpoints. LC2 (3333) and DOGE2 (3334) run simultaneously.
+   Blocks on both can happen independently or together (merge-mining).
+
+Q: What if I want to mine only LC2 or only DOGE2?
+A: Connect to the respective endpoint:
+   - LC2 only: stratum+tcp://127.0.0.1:3333
+   - DOGE2 only: stratum+tcp://127.0.0.1:3334
+
+Q: Can I change the mining address?
+A: Yes! Via the dashboard (Wallet Manager tab):
+  1. Open the dashboard URL from MINER-CONNECTION-INFO.txt
+   2. Payout Settings → Set Address
+   3. Enter your address or click Generate
+
+Q: What's the 1% dev fee?
+A: 1% of all block rewards go to the developer's address.
+   This is locked and non-configurable.
+
+Q: Are shares submitted to a pool?
+A: No. This is a SOLO proxy. All shares are tracked locally.
+   You must find your own blocks to earn rewards.
+
+Q: What if I don't see mining activity?
+A: 1. Verify miner is connected (check dashboard)
+     2. Check share count incrementing in console
+     3. Verify mining addresses are set (dashboard)
+  4. Ensure daemons are synced (check RPC status in console)
+  5. Verify your miner uses the live endpoint from MINER-CONNECTION-INFO.txt
+
+========================================================================
+SUPPORT
+========================================================================
+
+For issues or questions:
+  • Check the dashboard for real-time status
+  • Review JSON files in data/ folder for detailed logs
+  • Monitor console output for errors
+  • Test miner connectivity with simple tools first
+
+========================================================================
+Dev Fee: 1% locked in app code
+Mining Address: User-configurable from the dashboard
+Updated: 2026-04-28
+========================================================================
