@@ -43,6 +43,7 @@ Name: "{app}\data"
 [Icons]
 Name: "{group}\Start Miner Stack"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\bin\windows\start-miner-stack.ps1"" -OpenDashboard -OpenInfoFile"; WorkingDir: "{app}"
 Name: "{group}\Open Dashboard"; Filename: "{cmd}"; Parameters: "/c start http://127.0.0.1:8081/"; WorkingDir: "{app}"
+Name: "{group}\Open Runtime Status"; Filename: "{localappdata}\LC2 DOGE2 Solo Miner\RUNTIME-STATUS.txt"
 Name: "{group}\Tester Setup Guide"; Filename: "{app}\TESTER-MINING-SETUP.txt"
 Name: "{group}\Uninstall {#AppName}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#AppName}"; Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\bin\windows\start-miner-stack.ps1"" -OpenDashboard -OpenInfoFile"; WorkingDir: "{app}"; Tasks: desktopicon

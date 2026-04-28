@@ -54,6 +54,7 @@ $RuntimeRoot = if ($env:LOCALAPPDATA) {
     $ProxyDir
 }
 $StartupSummaryPath = Join-Path $RuntimeRoot 'data\startup-summary.json'
+$StatusPath = Join-Path $RuntimeRoot 'RUNTIME-STATUS.txt'
 
 $CheckInterval = 30   # seconds between health checks
 
@@ -113,6 +114,122 @@ function Test-RpcAlive($port, $user, $pass) {
         $resp.Close()
         return $true
     } catch { return $false }
+}
+
+function Invoke-RpcMethod($port, $user, $pass, $method, $params = @()) {
+    try {
+        $payloadObj = @{
+            method = $method
+            params = $params
+            id = 1
+        }
+        $body  = ($payloadObj | ConvertTo-Json -Compress)
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($body)
+        $cred  = [Convert]::ToBase64String([System.Text.Encoding]::ASCII.GetBytes("${user}:${pass}"))
+        $req   = [System.Net.HttpWebRequest]::Create("http://127.0.0.1:${port}/")
+        $req.Method        = 'POST'
+        $req.ContentType   = 'application/json'
+        $req.ContentLength = $bytes.Length
+        $req.Timeout       = 4000
+        $req.Headers.Add('Authorization', "Basic $cred")
+
+        $stream = $req.GetRequestStream()
+        $stream.Write($bytes, 0, $bytes.Length)
+        $stream.Close()
+
+        $resp = $req.GetResponse()
+        $reader = New-Object System.IO.StreamReader($resp.GetResponseStream())
+        $json = $reader.ReadToEnd()
+        $reader.Close()
+        $resp.Close()
+
+        $parsed = $json | ConvertFrom-Json
+        return $parsed.result
+    } catch {
+        return $null
+    }
+}
+
+function Get-SyncInfo($port, $user, $pass) {
+    $info = Invoke-RpcMethod -port $port -user $user -pass $pass -method 'getblockchaininfo'
+    if (-not $info) {
+        return @{
+            blocks = $null
+            headers = $null
+            progressPct = $null
+            initialBlockDownload = $null
+            behind = $null
+        }
+    }
+
+    $blocks = $null
+    $headers = $null
+    $progressPct = $null
+    $ibd = $null
+    $behind = $null
+
+    if ($null -ne $info.blocks) { $blocks = [int]$info.blocks }
+    if ($null -ne $info.headers) { $headers = [int]$info.headers }
+    if ($null -ne $info.verificationprogress) { $progressPct = [math]::Round(([double]$info.verificationprogress) * 100, 4) }
+    if ($null -ne $info.initialblockdownload) { $ibd = [bool]$info.initialblockdownload }
+    if ($null -ne $blocks -and $null -ne $headers) { $behind = [math]::Max(0, $headers - $blocks) }
+
+    return @{
+        blocks = $blocks
+        headers = $headers
+        progressPct = $progressPct
+        initialBlockDownload = $ibd
+        behind = $behind
+    }
+}
+
+function Write-LiveStatus($lc2Proc, $lc2RpcOk, $doge2Proc, $doge2RpcOk, $proxyProc, $managedStratumPorts, $dashPort) {
+    try {
+        $lc2Sync = if ($lc2RpcOk) { Get-SyncInfo 9222 'lc2rpc' '7ezB1EwlQf4iKJGba85ymAgo' } else { $null }
+        $doge2Sync = if ($doge2RpcOk) { Get-SyncInfo $Doge2RpcPort $Doge2RpcUser $Doge2RpcPass } else { $null }
+
+        $status = @"
+========================================================================
+  LC2/DOGE2 SOLO MINER - RUNTIME STATUS
+========================================================================
+Updated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+Runtime: $RuntimeRoot
+
+Processes:
+- LC2 daemon running: $($lc2Proc.Count -gt 0)
+- DOGE2 daemon running: $($doge2Proc.Count -gt 0)
+- Proxy running: $($proxyProc.Count -gt 0)
+
+RPC:
+- LC2 RPC responsive: $lc2RpcOk
+- DOGE2 RPC responsive: $doge2RpcOk
+
+Sync:
+- LC2 blocks/headers: $($lc2Sync.blocks)/$($lc2Sync.headers)
+- LC2 verification: $($lc2Sync.progressPct)%
+- LC2 behind: $($lc2Sync.behind)
+- LC2 IBD: $($lc2Sync.initialBlockDownload)
+
+- DOGE2 blocks/headers: $($doge2Sync.blocks)/$($doge2Sync.headers)
+- DOGE2 verification: $($doge2Sync.progressPct)%
+- DOGE2 behind: $($doge2Sync.behind)
+- DOGE2 IBD: $($doge2Sync.initialBlockDownload)
+
+Network:
+- Stratum ports: $($managedStratumPorts -join ', ')
+- Dashboard port: $dashPort
+
+Logs:
+- $LogFile
+- $ProxyOut
+- $ProxyErr
+========================================================================
+"@
+
+        [System.IO.File]::WriteAllText($StatusPath, $status)
+    } catch {
+        Write-Log "WARNING: Failed to write runtime status file: $($_.Exception.Message)"
+    }
 }
 
 function Test-PortListening($port) {
@@ -366,29 +483,37 @@ while ($true) {
 
     # ── 1. LC2 daemon ──────────────────────────────────────────────────────────
     $lc2Proc = Get-LC2ManagedProcesses
+    $lc2RpcOk = $false
     if (-not $lc2Proc -or $lc2Proc.Count -eq 0) {
         Write-Log "ALERT: LC2 daemon not running — restarting."
         Start-LC2Daemon
+        $lc2RpcOk = Test-RpcAlive 9222 'lc2rpc' '7ezB1EwlQf4iKJGba85ymAgo'
     } elseif (-not (Test-RpcAlive 9222 'lc2rpc' '7ezB1EwlQf4iKJGba85ymAgo')) {
         Write-Log "ALERT: LC2 daemon process exists but RPC unresponsive — killing and restarting."
         Stop-ManagedProcesses $lc2Proc
         Start-Sleep 3
         Start-LC2Daemon
+        $lc2RpcOk = Test-RpcAlive 9222 'lc2rpc' '7ezB1EwlQf4iKJGba85ymAgo'
     } else {
+        $lc2RpcOk = $true
         Write-Log "OK: LC2 daemon alive (PID $((@($lc2Proc)[0]).ProcessId))"
     }
 
     # ── 2. DOGE2 daemon ────────────────────────────────────────────────────────
     $doge2Proc = Get-Doge2ManagedProcesses
+    $doge2RpcOk = $false
     if (-not $doge2Proc -or $doge2Proc.Count -eq 0) {
         Write-Log "ALERT: DOGE2 daemon not running — restarting."
         Start-Doge2Daemon
+        $doge2RpcOk = Test-RpcAlive $Doge2RpcPort $Doge2RpcUser $Doge2RpcPass
     } elseif (-not (Test-RpcAlive $Doge2RpcPort $Doge2RpcUser $Doge2RpcPass)) {
         Write-Log "ALERT: DOGE2 daemon process exists but RPC unresponsive — killing and restarting."
         Stop-ManagedProcesses $doge2Proc
         Start-Sleep 3
         Start-Doge2Daemon
+        $doge2RpcOk = Test-RpcAlive $Doge2RpcPort $Doge2RpcUser $Doge2RpcPass
     } else {
+        $doge2RpcOk = $true
         Write-Log "OK: DOGE2 daemon alive (PID $((@($doge2Proc)[0]).ProcessId))"
     }
 
@@ -417,6 +542,8 @@ while ($true) {
     if ($dashPort -and -not (Test-PortListening $dashPort)) {
         Write-Log "WARNING: Dashboard port $dashPort not responding."
     }
+
+    Write-LiveStatus -lc2Proc $lc2Proc -lc2RpcOk $lc2RpcOk -doge2Proc $doge2Proc -doge2RpcOk $doge2RpcOk -proxyProc $proxyProc -managedStratumPorts $managedStratumPorts -dashPort $dashPort
 
     Start-Sleep $CheckInterval
 }
