@@ -46,6 +46,10 @@ $ProxyExe    = "$ProxyDir\dist\lc2-solo-proxy-windows.exe"
 $LogFile     = "$env:TEMP\watchdog.log"
 $ProxyOut    = "$env:TEMP\proxy-out.log"
 $ProxyErr    = "$env:TEMP\proxy-err.log"
+$Lc2Out      = "$env:TEMP\lc2-out.log"
+$Lc2Err      = "$env:TEMP\lc2-err.log"
+$Doge2Out    = "$env:TEMP\doge2-out.log"
+$Doge2Err    = "$env:TEMP\doge2-err.log"
 $RuntimeRoot = if ($env:LOCALAPPDATA) {
     Join-Path $env:LOCALAPPDATA 'LC2 DOGE2 Solo Miner'
 } elseif ($env:APPDATA) {
@@ -352,6 +356,9 @@ function Resolve-NodeExePath {
 
 function Start-LC2Daemon {
     Write-Log "RESTART: Starting LC2 daemon..."
+    if (-not (Test-Path $LC2DataDir)) {
+        New-Item -ItemType Directory -Path $LC2DataDir -Force | Out-Null
+    }
     $lc2Args = @(
         "-datadir=$LC2DataDir",
         '-server=1',
@@ -360,10 +367,24 @@ function Start-LC2Daemon {
         '-rpcpassword=7ezB1EwlQf4iKJGba85ymAgo',
         '-rpcallowip=127.0.0.1'
     )
-    Start-Process -FilePath $LC2Exe `
+    $proc = Start-Process -FilePath $LC2Exe `
         -ArgumentList $lc2Args `
-        -WindowStyle Hidden
+        -WindowStyle Hidden `
+        -RedirectStandardOutput $Lc2Out `
+        -RedirectStandardError $Lc2Err `
+        -PassThru
     Start-Sleep 5
+    if ($proc -and $proc.HasExited) {
+        Write-Log "ERROR: LC2 daemon exited immediately with code $($proc.ExitCode)."
+        if (Test-Path $Lc2Err) {
+            $tail = (Get-Content -Path $Lc2Err -Tail 5 -ErrorAction SilentlyContinue) -join ' | '
+            if ($tail) { Write-Log "LC2 stderr tail: $tail" }
+        }
+        if (Test-Path $Lc2Out) {
+            $tail = (Get-Content -Path $Lc2Out -Tail 5 -ErrorAction SilentlyContinue) -join ' | '
+            if ($tail) { Write-Log "LC2 stdout tail: $tail" }
+        }
+    }
     Write-Log "LC2 daemon launched — waiting for RPC..."
     $tries = 0
     while ($tries -lt 12 -and -not (Test-RpcAlive 9222 'lc2rpc' '7ezB1EwlQf4iKJGba85ymAgo')) {
@@ -374,6 +395,9 @@ function Start-LC2Daemon {
 
 function Start-Doge2Daemon {
     Write-Log "RESTART: Starting DOGE2 daemon..."
+    if (-not (Test-Path $Doge2DataDir)) {
+        New-Item -ItemType Directory -Path $Doge2DataDir -Force | Out-Null
+    }
     $doge2Args = @(
         "-datadir=$Doge2DataDir",
         '-server=1',
@@ -382,8 +406,24 @@ function Start-Doge2Daemon {
         "-rpcpassword=$Doge2RpcPass",
         '-rpcallowip=127.0.0.1'
     )
-    Start-Process -FilePath $Doge2Exe -ArgumentList $doge2Args -WindowStyle Hidden
+    $proc = Start-Process -FilePath $Doge2Exe `
+        -ArgumentList $doge2Args `
+        -WindowStyle Hidden `
+        -RedirectStandardOutput $Doge2Out `
+        -RedirectStandardError $Doge2Err `
+        -PassThru
     Start-Sleep 5
+    if ($proc -and $proc.HasExited) {
+        Write-Log "ERROR: DOGE2 daemon exited immediately with code $($proc.ExitCode)."
+        if (Test-Path $Doge2Err) {
+            $tail = (Get-Content -Path $Doge2Err -Tail 5 -ErrorAction SilentlyContinue) -join ' | '
+            if ($tail) { Write-Log "DOGE2 stderr tail: $tail" }
+        }
+        if (Test-Path $Doge2Out) {
+            $tail = (Get-Content -Path $Doge2Out -Tail 5 -ErrorAction SilentlyContinue) -join ' | '
+            if ($tail) { Write-Log "DOGE2 stdout tail: $tail" }
+        }
+    }
     Write-Log "DOGE2 daemon launched — waiting for RPC..."
     $tries = 0
     while ($tries -lt 12 -and -not (Test-RpcAlive $Doge2RpcPort $Doge2RpcUser $Doge2RpcPass)) {
