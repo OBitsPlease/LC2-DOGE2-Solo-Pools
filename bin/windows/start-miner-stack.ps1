@@ -136,10 +136,10 @@ function Test-WatchdogRunning {
     return $false
 }
 
-function Test-TcpPortOpen([string]$host, [int]$port) {
+function Test-TcpPortOpen([string]$targetHost, [int]$port) {
     $client = [System.Net.Sockets.TcpClient]::new()
     try {
-        $async = $client.BeginConnect($host, $port, $null, $null)
+        $async = $client.BeginConnect($targetHost, $port, $null, $null)
         if (-not $async.AsyncWaitHandle.WaitOne(2000, $false)) {
             return $false
         }
@@ -214,7 +214,7 @@ try {
     $dashPort = $dashUri.Port
 } catch {}
 
-$dashReachable = Test-TcpPortOpen -host $dashHost -port $dashPort
+$dashReachable = Test-TcpPortOpen -targetHost $dashHost -port $dashPort
 
 if ($startedCoins -eq 0 -or -not $dashReachable) {
     $watchdogLog = [System.IO.Path]::Combine((Get-TempRoot), 'watchdog.log')
