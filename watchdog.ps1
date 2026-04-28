@@ -63,24 +63,13 @@ function Resolve-Doge2ExePath {
         throw "DOGE2 directory not found: $Doge2BaseDir"
     }
 
-    $daemonExeNames = @('dogecoind.exe', 'dogecoin2d.exe')
-
-    $candidates = Get-ChildItem -Path $Doge2BaseDir -Directory -ErrorAction SilentlyContinue |
-        Sort-Object Name -Descending
-
-    foreach ($dir in $candidates) {
-        foreach ($exeName in $daemonExeNames) {
-            $exePath = Join-Path $dir.FullName $exeName
-            if (Test-Path $exePath) {
-                return $exePath
-            }
-        }
-    }
+    $daemonExeNames = @('dogecoin2d.exe', 'dogecoind.exe')
 
     foreach ($exeName in $daemonExeNames) {
-        $directExePath = Join-Path $Doge2BaseDir $exeName
-        if (Test-Path $directExePath) {
-            return $directExePath
+        $matches = Get-ChildItem -Path $Doge2BaseDir -Recurse -File -Filter $exeName -ErrorAction SilentlyContinue |
+            Sort-Object FullName -Descending
+        if ($matches -and $matches.Count -gt 0) {
+            return $matches[0].FullName
         }
     }
 
