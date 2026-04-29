@@ -24,13 +24,30 @@ Write-Host 'Building Windows executable with pkg...'
 & npx pkg src/index.js --target node18-win-x64 --output dist/lc2-solo-proxy-windows.exe
 if ($LASTEXITCODE -ne 0) { throw 'pkg build failed.' }
 
-$isccCandidates = @(
+$isccCandidates = New-Object System.Collections.Generic.List[string]
+
+# Prefer PATH-discoverable compiler first (works with Chocolatey shims on CI).
+foreach ($cmd in @('iscc.exe', 'iscc', 'ISCC.exe', 'ISCC')) {
+    $resolved = Get-Command $cmd -ErrorAction SilentlyContinue
+    if ($resolved -and $resolved.Source) {
+        $isccCandidates.Add($resolved.Source)
+    }
+}
+
+# Then try common install locations.
+foreach ($p in @(
     "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe",
     "$env:ProgramFiles(x86)\Inno Setup 6\ISCC.exe",
-    "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
-)
+    "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
+    "$env:ChocolateyInstall\bin\iscc.exe",
+    "$env:ChocolateyInstall\lib\innosetup\tools\iscc.exe",
+    "C:\ProgramData\chocolatey\bin\iscc.exe",
+    "C:\ProgramData\chocolatey\lib\innosetup\tools\iscc.exe"
+)) {
+    if ($p) { $isccCandidates.Add($p) }
+}
 
-$iscc = $isccCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+$iscc = $isccCandidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
 if (-not $iscc) {
     throw 'Inno Setup compiler (ISCC.exe) not found. Install Inno Setup 6 first.'
 }
