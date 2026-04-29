@@ -1,9 +1,10 @@
 'use strict';
-const http    = require('http');
-const fs      = require('fs');
-const path    = require('path');
-const ds      = require('./data-store');
-const config  = require('./config');
+const http          = require('http');
+const fs            = require('fs');
+const path          = require('path');
+const ds            = require('./data-store');
+const config        = require('./config');
+const updateChecker = require('./update-checker');
 
 // ─── Pool metadata (what /dashboard/pools-meta returns) ────────────────────
 function buildPoolsMeta() {
@@ -95,6 +96,7 @@ function getLivePoolStats(poolId) {
   const connectedMiners = mgr?.stratumServer?.getConnectedCount?.() || 0;
   const validSharesPerSecond = ds.getSharesRate(poolId);
   const jobInfo = mgr?.jobManager?.currentJob || {};
+  const netInfo = mgr?.jobManager?._networkInfo || {};
   return {
     pool: {
       id: poolId,
@@ -106,10 +108,14 @@ function getLivePoolStats(poolId) {
         validSharesPerSecond
       },
       networkStats: {
-        networkHashrate:    jobInfo.networkHashrate   || 0,
-        blockHeight:        jobInfo.height            || 0,
-        networkDifficulty:  jobInfo.difficulty        || 0,
-        connectedPeers:     jobInfo.connectedPeers    || 0
+        networkHashrate:    jobInfo.networkHashrate   || netInfo.networkHashrate || 0,
+        blockHeight:        jobInfo.height            || netInfo.blockHeight || 0,
+        networkDifficulty:  jobInfo.difficulty        || netInfo.networkDifficulty || 0,
+        connectedPeers:     jobInfo.connectedPeers    || netInfo.connectedPeers || 0,
+        headers:            netInfo.headers || 0,
+        verificationProgress: typeof netInfo.verificationProgress === 'number' ? netInfo.verificationProgress : 0,
+        initialBlockDownload: !!netInfo.initialBlockDownload,
+        blocksBehind:        Number.isFinite(netInfo.blocksBehind) ? netInfo.blocksBehind : 0
       },
       totalBlocks:      ds.countBlocks(poolId),
       totalPaid:        ds.totalPaid(poolId),
@@ -455,6 +461,44 @@ route('GET', '/dashboard/shares-stream', (req, res, rp, qp) => {
   send();
   const iv = setInterval(send, 2000);
   req.on('close', () => clearInterval(iv));
+});
+
+// ─── Daemon update routes ──────────────────────────────────────────────────
+
+route('GET', '/api/updates', async (req, res) => {
+  try {
+    const coins    = await updateChecker.getUpdateStatus(config.coins);
+    const progress = updateChecker.getUpdateProgress();
+    jsonOk(res, { coins, ...progress });
+  } catch (e) {
+    jsonErr(res, 500, e.message);
+  }
+});
+
+route('POST', '/api/updates/:coinId/apply', async (req, res, rp) => {
+  try {
+    const coinId = rp.coinId;
+    if (!config.coins[coinId]) return jsonErr(res, 404, `Unknown coin: ${coinId}`);
+
+    const status = await updateChecker.getUpdateStatus(config.coins);
+    const cs = status[coinId];
+
+    if (!cs || !cs.updateAvailable) return jsonErr(res, 400, 'No update available for this coin');
+    if (!cs.assetUrl)               return jsonErr(res, 400, 'No download asset found for this coin');
+
+    // Don't queue a second request while one is already pending
+    const { pendingRequest } = updateChecker.getUpdateProgress();
+    if (pendingRequest) return jsonErr(res, 409, `Update for ${pendingRequest.coinId} already in progress`);
+
+    const request = updateChecker.triggerUpdate(coinId, cs.assetUrl, cs.assetName, cs.latestVersion);
+    jsonOk(res, { queued: true, request });
+  } catch (e) {
+    jsonErr(res, 500, e.message);
+  }
+});
+
+route('GET', '/api/updates/progress', (req, res) => {
+  jsonOk(res, updateChecker.getUpdateProgress());
 });
 
 // ─── Static files ──────────────────────────────────────────────────────────

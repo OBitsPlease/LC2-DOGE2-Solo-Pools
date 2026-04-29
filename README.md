@@ -1,4 +1,3 @@
-automatically selects the next open port.
 LC2 / DOGE2 Solo Miner
 ======================
 
@@ -11,7 +10,7 @@ The installer includes the miner stack, wallet/daemon binaries, local dashboard,
 
 ## Install
 
-1. Run `LC2-DOGE2-Solo-Miner-Setup.exe`
+1. Run the latest `LC2-DOGE2-Solo-Miner-Setup-<version>.exe`
 2. Finish the installer
 3. Use the Desktop icon or Start Menu shortcut named `LC2 DOGE2 Solo Miner`
 
@@ -61,4 +60,4 @@ If something is not working:
 1. Check `MINER-CONNECTION-INFO.txt`
 2. Open the dashboard shown there
 3. Review the files in `data\`
-4. Review `%TEMP%\watchdog.log`, `%TEMP%\proxy-out.log`, and `%TEMP%\proxy-err.log`
+4. Review `%LOCALAPPDATA%\LC2 DOGE2 Solo Miner\logs\watchdog.log`, `proxy-out.log`, and `proxy-err.log`

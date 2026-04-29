@@ -301,6 +301,17 @@
         </div>
       </div>
 
+      <!-- DAEMON UPDATES PANEL -->
+      <div class="panel">
+        <div class="panel-header">
+          Daemon Updates
+          <span class="badge" id="updates-badge">checking…</span>
+        </div>
+        <div class="panel-body" id="updates-body">
+          <div class="empty loading" style="padding:10px 0">Checking for updates…</div>
+        </div>
+      </div>
+
       <!-- PAYOUT SETTINGS -->
       <div class="panel">
         <div class="panel-header">Payout Settings</div>
@@ -733,16 +744,21 @@ async function loadPoolStats() {
         const pool = data.pool || data;
         const ps   = pool.poolStats   || {};
         const ns   = pool.networkStats || {};
+        const blockHeight = ns.blockHeight || 0;
+        const headers = ns.headers || blockHeight;
+        const verification = Number(ns.verificationProgress || 0);
+        const ibd = !!ns.initialBlockDownload;
+        const behind = Number.isFinite(ns.blocksBehind) ? ns.blocksBehind : Math.max(0, headers - blockHeight);
 
         setEl('pool-hr', fmtHash(ps.poolHashrate || 0));
         setEl('pool-miners', `${ps.connectedMiners || 0} miner${ps.connectedMiners !== 1 ? 's' : ''}`);
         setEl('net-hr', fmtHash(ns.networkHashrate || 0));
-        setEl('net-height', `Block ${(ns.blockHeight||0).toLocaleString()}`);
+        setEl('net-height', `Block ${blockHeight.toLocaleString()} / Header ${headers.toLocaleString()}`);
         setEl('net-diff', fmtDiff(ns.networkDifficulty || 0));
         setEl('net-peers', `${ns.connectedPeers || 0} peers`);
         setEl('total-blocks', (pool.totalBlocks || 0).toLocaleString());
         setEl('total-paid', (pool.totalPaid || 0).toFixed(4) + ' ' + POOL_SYMBOL);
-        setEl('h-height', (ns.blockHeight||0).toLocaleString());
+        setEl('h-height', blockHeight.toLocaleString());
         setEl('h-peers', ns.connectedPeers || 0);
         setEl('h-fee', (pool.poolFeePercent || 1) + '%');
 
@@ -765,7 +781,18 @@ async function loadPoolStats() {
         const hApi = document.getElementById('h-api');
         if (hApi) { hApi.textContent = '✓ Online'; hApi.className = 'health-val health-ok'; }
         const hNode = document.getElementById('h-node');
-        if (hNode && ns.blockHeight > 0) { hNode.textContent = '✓ Synced'; hNode.className = 'health-val health-ok'; }
+        if (hNode) {
+          if (blockHeight <= 0) {
+            hNode.textContent = '✗ No chain data';
+            hNode.className = 'health-val health-err';
+          } else if (ibd || behind > 0 || verification < 0.999) {
+            hNode.textContent = `⚠ Syncing (${(verification * 100).toFixed(2)}%, behind ${behind})`;
+            hNode.className = 'health-val health-warn';
+          } else {
+            hNode.textContent = '✓ Synced';
+            hNode.className = 'health-val health-ok';
+          }
+        }
 
         const poolStatus = document.getElementById('pool-status');
         if (poolStatus) poolStatus.innerHTML = '<span class="status-dot"></span>Online';
@@ -1488,6 +1515,137 @@ document.addEventListener('DOMContentLoaded', () => {
 
 // Auto-refresh every 60s
 setInterval(refreshAll, 60000);
+
+// ─── DAEMON UPDATES ────────────────────────────────────────────────────────
+let _updatesInProgress = {};  // coinId -> true while update button is locked
+
+async function refreshUpdates() {
+    const badge = document.getElementById('updates-badge');
+    const body  = document.getElementById('updates-body');
+    if (!body) return;
+    try {
+        const data = await fetch('/api/updates').then(r => r.json());
+        const coins = data.coins || {};
+        const pending = data.pendingRequest;
+        const status  = data.updateStatus;
+
+        const entries = Object.values(coins);
+        if (!entries.length) {
+            badge.textContent = 'n/a';
+            body.innerHTML = '<div class="empty">No coins configured for updates.</div>';
+            return;
+        }
+
+        const hasUpdate = entries.some(c => c.updateAvailable);
+        badge.textContent = hasUpdate ? '⬆ Update available' : 'Up to date';
+        badge.style.color = hasUpdate ? 'var(--yellow)' : 'var(--green)';
+
+        let html = '';
+        for (const c of entries) {
+            const coinLabel = (c.coinId || '').toUpperCase();
+            const isBusy = pending && pending.coinId === c.coinId;
+            const progressLabel = isBusy && status ? ` — ${status.status}…` : '';
+
+            if (c.reason && !c.latestVersion) {
+                // Can't check (missing config or network error)
+                html += `
+                <div class="health-row">
+                  <div>
+                    <span class="health-label">${coinLabel} daemon</span>
+                    <span style="color:var(--muted);font-size:11px"> v${c.currentVersion || '?'}</span>
+                  </div>
+                  <span class="health-val" style="color:var(--muted);font-size:11px" title="${c.reason}">check unavailable</span>
+                </div>`;
+            } else if (c.updateAvailable) {
+                html += `
+                <div class="health-row">
+                  <div>
+                    <span class="health-label">${coinLabel} daemon</span>
+                    <span style="color:var(--muted);font-size:11px"> v${c.currentVersion}</span>
+                  </div>
+                  <div style="display:flex;align-items:center;gap:8px">
+                    <span style="color:var(--yellow);font-weight:600;font-size:12px">v${c.latestVersion} available</span>
+                    <button class="btn btn-sm" id="upd-btn-${c.coinId}"
+                      style="${isBusy ? 'opacity:.4;cursor:not-allowed' : ''}"
+                      onclick="applyDaemonUpdate('${c.coinId}')"
+                      ${isBusy ? 'disabled' : ''}>
+                      ${isBusy ? progressLabel || 'Updating…' : 'Update'}
+                    </button>
+                  </div>
+                </div>`;
+                if (c.releaseNotes) {
+                    html += `<div style="font-size:11px;color:var(--muted);padding:4px 0 8px 0;border-bottom:1px solid var(--border);white-space:pre-wrap;max-height:80px;overflow:hidden">${escHtml(c.releaseNotes.slice(0,300))}</div>`;
+                }
+            } else {
+                html += `
+                <div class="health-row">
+                  <div>
+                    <span class="health-label">${coinLabel} daemon</span>
+                    <span style="color:var(--muted);font-size:11px"> v${c.currentVersion}</span>
+                  </div>
+                  <span class="health-val health-ok">✓ Up to date${c.latestVersion ? ' (v'+c.latestVersion+')' : ''}</span>
+                </div>`;
+            }
+        }
+
+        // Show active update status banner
+        if (status && status.status && status.status !== 'done') {
+            const pct = { downloading:20, 'stopping-daemon':40, extracting:60, 'replacing-binary':80 }[status.status] || 10;
+            html = `<div style="background:rgba(247,147,26,.1);border:1px solid rgba(247,147,26,.3);border-radius:6px;padding:8px 12px;margin-bottom:10px;font-size:12px;color:var(--accent)">
+              ⟳ Updating ${(status.coinId||'').toUpperCase()} daemon — ${status.status}…
+              <div style="margin-top:6px;background:var(--surface2);border-radius:4px;height:4px;overflow:hidden">
+                <div style="width:${pct}%;height:100%;background:var(--accent);transition:width 1s"></div>
+              </div>
+            </div>` + html;
+        }
+        if (status && status.status === 'done') {
+            html = `<div class="alert alert-ok" style="margin-bottom:10px">✓ ${(status.coinId||'').toUpperCase()} updated to v${status.version} successfully. Daemon will restart automatically.</div>` + html;
+        }
+        if (status && status.status === 'error') {
+            html = `<div class="alert alert-err" style="margin-bottom:10px">✗ Update failed: ${escHtml(status.message||'unknown error')}</div>` + html;
+        }
+
+        body.innerHTML = html || '<div class="empty">No updates configured.</div>';
+    } catch(e) {
+        if (badge) { badge.textContent = 'error'; badge.style.color = 'var(--red)'; }
+        if (body)  body.innerHTML = `<div class="empty" style="color:var(--red)">Update check failed: ${escHtml(e.message)}</div>`;
+    }
+}
+
+function escHtml(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+async function applyDaemonUpdate(coinId) {
+    const btn = document.getElementById(`upd-btn-${coinId}`);
+    if (!confirm(`Update the ${coinId.toUpperCase()} daemon?\n\nThe daemon will be stopped, the new binary downloaded and installed, then restarted automatically.\n\nYour wallet and mining address will NOT be changed.`)) return;
+    if (btn) { btn.disabled = true; btn.textContent = 'Queuing…'; }
+    try {
+        const r = await fetch(`/api/updates/${coinId}/apply`, { method: 'POST' });
+        const d = await r.json();
+        if (!r.ok) throw new Error(d.error || r.statusText);
+        // Start polling more frequently while update is in progress
+        _updatesInProgress[coinId] = true;
+        let polls = 0;
+        const poll = setInterval(async () => {
+            polls++;
+            await refreshUpdates();
+            const prog = await fetch('/api/updates/progress').then(x => x.json());
+            if (!prog.pendingRequest || polls > 40) {
+                clearInterval(poll);
+                delete _updatesInProgress[coinId];
+                await refreshUpdates();
+            }
+        }, 5000);
+    } catch(e) {
+        alert(`Failed to queue update: ${e.message}`);
+        if (btn) { btn.disabled = false; btn.textContent = 'Update'; }
+    }
+}
+
+// Check updates on load, then every 15 minutes
+refreshUpdates();
+setInterval(refreshUpdates, 15 * 60 * 1000);
 </script>
 </body>
 </html>

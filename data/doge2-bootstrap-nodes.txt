@@ -1,0 +1,13 @@
+# DOGE2 bootstrap nodes
+# You can use either plain host[:port] or addnode=host[:port]
+
+# Pre-compiled DNS seeds
+Doge1.doge2.org
+Doge2.doge2.org
+Doge3.doge2.org
+
+# VPS add nodes
+31.220.96.220:22656
+45.76.148.54:22656
+139.84.229.188:22656
+45.77.233.130:22656

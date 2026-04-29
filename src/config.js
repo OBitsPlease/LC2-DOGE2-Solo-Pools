@@ -39,6 +39,15 @@ const coins = {
       user: 'lc2rpc',
       password: '7ezB1EwlQf4iKJGba85ymAgo',
       gbtRules: ['segwit', 'mweb']
+    },
+
+    // Daemon auto-update (GitHub releases)
+    // Set githubRepo to the coin's GitHub repo slug (owner/repo)
+    // assetPattern: regex to match the Windows 64-bit zip in the release assets
+    daemonUpdate: {
+      githubRepo:       'TODO/litecoinii',      // ← fill in when repo is known
+      assetPattern:     'windows.{0,10}64.{0,30}\\.zip',
+      installedVersion: '1.0.0'                 // ← set to your installed version
     }
   },
 
@@ -74,6 +83,13 @@ const coins = {
       user: 'doge2rpc',
       password: 'Doge2RpcPass2026!',
       gbtRules: ['segwit']
+    },
+
+    // Daemon auto-update (GitHub releases)
+    daemonUpdate: {
+      githubRepo:       'TODO/dogecoin2',         // ← fill in when repo is known
+      assetPattern:     'windows.{0,10}64.{0,30}\\.zip',
+      installedVersion: '0.0.7'                   // ← set to your installed version
     }
   }
 };

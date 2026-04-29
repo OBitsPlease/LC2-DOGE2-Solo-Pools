@@ -1,0 +1,16 @@
+node_modules/
+.venv/
+
+# Build artifacts
+dist/*.exe
+dist/lc2-solo-proxy-macos
+dist/lc2-solo-proxy-linux
+
+# Runtime/generated files
+data/startup-summary.json
+data/update-request.json
+data/update-status.json
+data/installed-versions.json
+
+# Local logs
+*.log

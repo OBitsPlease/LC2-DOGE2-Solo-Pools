@@ -44,8 +44,37 @@ function getBlocks(poolId, { page = 0, pageSize = 15, state = null } = {}) {
 
 function addBlock(block) {
   const blocks = read('blocks', []);
-  blocks.push({ ...block, created: block.created || new Date().toISOString() });
+  blocks.push({
+    ...block,
+    id: block.id || `${block.poolId || 'pool'}:${block.height || 0}:${Date.now()}:${Math.floor(Math.random() * 1e6)}`,
+    created: block.created || new Date().toISOString(),
+    resubmitAttempts: block.resubmitAttempts || 0
+  });
   write('blocks', blocks);
+}
+
+function getPendingBlocks(poolId = null) {
+  const all = read('blocks', []);
+  return all.filter(b => {
+    if (poolId && b.poolId !== poolId) return false;
+    const st = (b.status || '').toLowerCase();
+    return st === 'pending' || st === 'orphaned';
+  });
+}
+
+function updateBlockRecord(poolId, height, created, updates) {
+  const blocks = read('blocks', []);
+  const b = blocks.find(x =>
+    x.poolId === poolId &&
+    x.height === height &&
+    String(x.created || '') === String(created || '')
+  );
+  if (b) {
+    Object.assign(b, updates || {}, { updated: new Date().toISOString() });
+    write('blocks', blocks);
+    return b;
+  }
+  return null;
 }
 
 function updateBlockStatus(poolId, height, status, confirmationProgress) {
@@ -250,6 +279,7 @@ function deleteWorker(name) {
 module.exports = {
   getDataDir: () => DATA_DIR,
   getBlocks, addBlock, updateBlockStatus, getBlockWorkers, countBlocks, pendingRewards,
+  getPendingBlocks, updateBlockRecord,
   getPayments, addPayment, totalPaid,
   addPerfSnapshot, getPerfSnapshots, getMinerPerfSnapshots,
   addShare, getSharesSince, getSharesRate,

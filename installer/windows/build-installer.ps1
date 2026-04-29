@@ -6,11 +6,19 @@ Set-Location $ProjectRoot
 if (-not (Test-Path (Join-Path $ProjectRoot 'dist'))) {
     New-Item -Path (Join-Path $ProjectRoot 'dist') -ItemType Directory | Out-Null
 }
+$distDir = Join-Path $ProjectRoot 'dist'
 
 $pkgCmd = Get-Command npx -ErrorAction SilentlyContinue
 if (-not $pkgCmd) {
     throw 'npx not found. Install Node.js 20+ first.'
 }
+
+$pkgJson = Get-Content -Raw -Path (Join-Path $ProjectRoot 'package.json') | ConvertFrom-Json
+$appVersion = $pkgJson.version
+
+Write-Host 'Cleaning old installer builds from dist...'
+Get-ChildItem -Path $distDir -File -Filter 'LC2-DOGE2-Solo-Miner-Setup*.exe' -ErrorAction SilentlyContinue |
+    Remove-Item -Force -ErrorAction SilentlyContinue
 
 Write-Host 'Building Windows executable with pkg...'
 & npx pkg src/index.js --target node18-win-x64 --output dist/lc2-solo-proxy-windows.exe
@@ -27,11 +35,8 @@ if (-not $iscc) {
     throw 'Inno Setup compiler (ISCC.exe) not found. Install Inno Setup 6 first.'
 }
 
-$pkgJson = Get-Content -Raw -Path (Join-Path $ProjectRoot 'package.json') | ConvertFrom-Json
-$appVersion = $pkgJson.version
-
 Write-Host "Building installer (version $appVersion)..."
 & $iscc "/DAppVersion=$appVersion" "installer\windows\LC2Doge2SoloMiner.iss"
 if ($LASTEXITCODE -ne 0) { throw 'Inno Setup build failed.' }
 
-Write-Host 'Installer build complete: dist\LC2-DOGE2-Solo-Miner-Setup.exe'
+Write-Host "Installer build complete: dist\LC2-DOGE2-Solo-Miner-Setup-$appVersion.exe"

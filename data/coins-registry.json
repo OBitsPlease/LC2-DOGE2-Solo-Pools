@@ -1,0 +1,86 @@
+{
+  "_comment": [
+    "coins-registry.json — Add new coins here to expand the miner.",
+    "",
+    "HOW TO ADD A NEW COIN:",
+    "  1. Add a new entry to this array (copy the template below).",
+    "  2. Add a matching entry in src/config.js under 'coins' with:",
+    "       - rpc settings (host, port, user, password, gbtRules)",
+    "       - stratumPort, miningAddress, blockReward, symbol, name",
+    "       - daemonUpdate.githubRepo and installedVersion",
+    "  3. Place the daemon exe under bin/<coinId>/  (the watchdog scans for *d.exe files).",
+    "  4. Run: npm run build:installer:win  to rebuild the installer.",
+    "",
+    "ALGORITHM NOTES:",
+    "  scrypt  — Litecoin/Dogecoin style (most ASICs: Antminer L7, Goldshell LT6…)",
+    "  sha256  — Bitcoin style (Antminer S19, Whatsminer M50…)",
+    "  Both are supported by the proxy — set 'algorithm' and 'gbtRules' correctly.",
+    "",
+    "MERGE-MINING (AuxPoW):",
+    "  If a coin is merge-mined from another, set 'mergedParent' to the parent coinId.",
+    "  Miners only connect to the parent stratum; the proxy handles AuxPoW automatically.",
+    "",
+    "WATCHDOG NOTE:",
+    "  The watchdog (watchdog.ps1) currently has hardcoded sections for lc2 and doge2.",
+    "  When adding a third coin, duplicate the relevant watchdog section and update the",
+    "  exe paths, RPC credentials, and process name to match the new coin."
+  ],
+
+  "coins": [
+    {
+      "id": "lc2",
+      "name": "LitecoinII",
+      "symbol": "LC2",
+      "algorithm": "scrypt",
+      "stratumPort": 3333,
+      "rpcPort": 9222,
+      "p2pPort": 9223,
+      "gbtRules": ["segwit", "mweb"],
+      "daemonExePattern": "litecoinIId.exe",
+      "daemonBinDir": "bin/lc2",
+      "dataDir": "%APPDATA%\\LitecoinII",
+      "confFile": "%APPDATA%\\LitecoinII\\litecoinii.conf",
+      "githubRepo": "TODO/litecoinii",
+      "installedVersion": "1.0.0",
+      "mergedParent": null
+    },
+    {
+      "id": "doge2",
+      "name": "Dogecoin2",
+      "symbol": "DOGE2",
+      "algorithm": "scrypt",
+      "stratumPort": 3334,
+      "rpcPort": 22655,
+      "p2pPort": 22656,
+      "gbtRules": ["segwit"],
+      "daemonExePattern": "dogecoin2d.exe",
+      "daemonBinDir": "bin/doge2",
+      "dataDir": "%APPDATA%\\Dogecoin2",
+      "confFile": "%APPDATA%\\Dogecoin2\\dogecoin2.conf",
+      "githubRepo": "TODO/dogecoin2",
+      "installedVersion": "0.0.7",
+      "mergedParent": "lc2"
+    },
+
+    {
+      "_comment": "TEMPLATE — copy this block, fill in values, remove the _disabled flag.",
+      "_disabled": true,
+
+      "id": "newcoin",
+      "name": "New Coin",
+      "symbol": "NEW",
+      "algorithm": "scrypt",
+      "stratumPort": 3335,
+      "rpcPort": 19332,
+      "p2pPort": 19333,
+      "gbtRules": ["segwit"],
+      "daemonExePattern": "newcoind.exe",
+      "daemonBinDir": "bin/newcoin",
+      "dataDir": "%APPDATA%\\NewCoin",
+      "confFile": "%APPDATA%\\NewCoin\\newcoin.conf",
+      "githubRepo": "owner/newcoin",
+      "installedVersion": "1.0.0",
+      "mergedParent": null
+    }
+  ]
+}

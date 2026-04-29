@@ -1,6 +1,6 @@
 {
   "name": "lc2-doge2-stratum-proxy-solo-miner",
-  "version": "1.0.0",
+  "version": "1.0.24",
   "description": "Solo stratum proxy for LC2 and DOGE2 merge-mined coins. 1% dev fee (locked).",
   "main": "src/index.js",
   "bin": {
@@ -14,7 +14,15 @@
     "genaddress": "node bin/gen-address.js",
     "desktopicon": "powershell -ExecutionPolicy Bypass -File bin/windows/create-desktop-icon.ps1"
   },
-  "keywords": ["litecoinii", "lc2", "doge2", "stratum", "solo", "mining", "proxy"],
+  "keywords": [
+    "litecoinii",
+    "lc2",
+    "doge2",
+    "stratum",
+    "solo",
+    "mining",
+    "proxy"
+  ],
   "author": "",
   "license": "MIT",
   "type": "commonjs",

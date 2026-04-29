@@ -57,7 +57,8 @@ async function checkCoin(key, cfg, reservedPorts) {
     user: cfg.rpc.user,
     password: cfg.rpc.password,
     gbtRules: cfg.rpc.gbtRules,
-    cookieFile: cfg.rpc.cookieFile || defaultCookieFileForCoin(key)
+    cookieFile: cfg.rpc.cookieFile || defaultCookieFileForCoin(key),
+    preferCookieAuth: key !== 'doge2' || !process.pkg
   });
 
   try {

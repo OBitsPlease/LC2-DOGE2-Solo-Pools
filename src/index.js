@@ -10,6 +10,8 @@
  * without modifying and rebuilding the source).
  */
 
+const ORPHAN_RECHECK_MS = 120000;
+const MAX_ORPHAN_RESUBMIT_ATTEMPTS = 3;
 const RPCClient       = require('./rpc-client');
 const JobManager      = require('./job-manager');
 const StratumServer   = require('./stratum-server');
@@ -20,10 +22,27 @@ const net             = require('net');
 const path            = require('path');
 const fs              = require('fs');
 
+const ORPHAN_LOG_DIR = path.join(path.dirname(ds.getDataDir()), 'logs');
+const ORPHAN_EVENT_LOG = path.join(ORPHAN_LOG_DIR, 'orphan-events.log');
+
+function writeOrphanEvent(msg) {
+  try {
+    fs.mkdirSync(ORPHAN_LOG_DIR, { recursive: true });
+    fs.appendFileSync(ORPHAN_EVENT_LOG, `[${new Date().toISOString()}] ${msg}\n`);
+  } catch (_) {}
+}
+
 const coins = [
   { key: 'lc2',   cfg: config.lc2   },
   { key: 'doge2', cfg: config.doge2 }
 ];
+
+function isCoinEnabledBySelection(coinKey) {
+  const envKey = `DAEMON_ENABLE_${coinKey.toUpperCase()}`;
+  const raw = (process.env[envKey] || '').trim().toLowerCase();
+  if (!raw) return true;
+  return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
+}
 
 function canBindPort(port, host = '0.0.0.0') {
   return new Promise(resolve => {
@@ -66,6 +85,100 @@ function writeStartupSummary(payload) {
   console.log(`[Startup] Summary written: ${outPath}`);
 }
 
+function reverseHex(hex) {
+  if (!hex || typeof hex !== 'string' || hex.length % 2 !== 0) return hex;
+  return hex.match(/../g).reverse().join('');
+}
+
+async function tryGetBlockConfirmations(rpc, hashHex) {
+  if (!hashHex || !/^[0-9a-fA-F]{64}$/.test(hashHex)) return null;
+  try {
+    const b = await rpc.call('getblock', [hashHex]);
+    if (b && typeof b.confirmations === 'number') return b.confirmations;
+  } catch (_) {}
+  return null;
+}
+
+async function monitorOrphansAndResubmit(running) {
+  const byKey = Object.fromEntries(running.map(r => [r.key, r]));
+  const pending = ds.getPendingBlocks();
+  if (!pending.length) return;
+
+  for (const block of pending) {
+    const coinKey = String(block.poolId || '').replace(/_solo\d+$/, '');
+    const instance = byKey[coinKey];
+    if (!instance || !instance.rpc) continue;
+
+    let confirmations = null;
+    if (block.hash) {
+      confirmations = await tryGetBlockConfirmations(instance.rpc, block.hash);
+      if (confirmations === null) {
+        confirmations = await tryGetBlockConfirmations(instance.rpc, reverseHex(block.hash));
+      }
+    }
+
+    if (typeof confirmations === 'number') {
+      if (confirmations < 0) {
+        writeOrphanEvent(`orphan-detected pool=${block.poolId} height=${block.height} confirmations=${confirmations}`);
+        ds.updateBlockRecord(block.poolId, block.height, block.created, {
+          status: 'orphaned',
+          confirmationProgress: 0,
+          orphanDetectedAt: new Date().toISOString()
+        });
+      } else if (confirmations === 0) {
+        ds.updateBlockRecord(block.poolId, block.height, block.created, {
+          status: 'pending',
+          confirmationProgress: 0
+        });
+      } else {
+        ds.updateBlockRecord(block.poolId, block.height, block.created, {
+          status: 'confirmed',
+          confirmationProgress: Math.min(100, confirmations),
+          confirmations
+        });
+      }
+      continue;
+    }
+
+    const chainHeight = instance?.jobMgr?._networkInfo?.blockHeight || 0;
+    const ageMs = Date.now() - new Date(block.created || Date.now()).getTime();
+    if (chainHeight > 0 && block.height > 0 && chainHeight - block.height >= 8 && ageMs > 10 * 60 * 1000) {
+      writeOrphanEvent(`orphan-heuristic pool=${block.poolId} height=${block.height} chainHeight=${chainHeight} ageMs=${ageMs}`);
+      ds.updateBlockRecord(block.poolId, block.height, block.created, {
+        status: 'orphaned',
+        confirmationProgress: 0,
+        orphanDetectedAt: new Date().toISOString()
+      });
+    }
+
+    const latest = ds.getPendingBlocks(block.poolId).find(b => b.created === block.created && b.height === block.height);
+    const shouldRetry = latest && latest.status === 'orphaned' && latest.blockHex && (latest.resubmitAttempts || 0) < MAX_ORPHAN_RESUBMIT_ATTEMPTS;
+    if (!shouldRetry) continue;
+
+    const attempts = (latest.resubmitAttempts || 0) + 1;
+    let submitResult = null;
+    let submitErr = null;
+    try {
+      submitResult = await instance.rpc.submitBlock(latest.blockHex);
+    } catch (e) {
+      submitErr = e.message;
+    }
+
+    const accepted = submitErr === null && (submitResult === null || submitResult === undefined || submitResult === '' || String(submitResult).toLowerCase().includes('duplicate'));
+
+    ds.updateBlockRecord(latest.poolId, latest.height, latest.created, {
+      status: accepted ? 'pending' : 'orphaned',
+      resubmitAttempts: attempts,
+      lastResubmitAt: new Date().toISOString(),
+      lastResubmitResult: submitErr ? `error:${submitErr}` : String(submitResult)
+    });
+
+    const sym = instance.cfg?.symbol || coinKey.toUpperCase();
+    writeOrphanEvent(`resubmit pool=${latest.poolId} symbol=${sym} height=${latest.height} attempt=${attempts} accepted=${accepted} result=${submitErr || submitResult}`);
+    console.log(`[${sym}] Orphan monitor: resubmit attempt ${attempts} ${accepted ? 'accepted/queued' : 'failed'} for block height ${latest.height}`);
+  }
+}
+
 async function startCoin(key, cfg) {
   console.log(`\n[${cfg.symbol}] Starting solo stratum proxy...`);
 
@@ -81,7 +194,8 @@ async function startCoin(key, cfg) {
     user:     cfg.rpc.user,
     password: cfg.rpc.password,
     gbtRules: cfg.rpc.gbtRules,
-    cookieFile: cfg.rpc.cookieFile || defaultCookieFile
+    cookieFile: cfg.rpc.cookieFile || defaultCookieFile,
+    preferCookieAuth: key !== 'doge2' || !process.pkg
   });
 
   // Quick connectivity check
@@ -127,21 +241,23 @@ async function startCoin(key, cfg) {
   // Register with dashboard server
   dashboardServer.registerManager(key, jobMgr, stratum);
 
-  stratum.on('blockFound', ({ workerName }) => {
-    const height = jobMgr.currentJob?.height || 0;
+  stratum.on('blockFound', ({ workerName, blockHex = null, hashHex = null, height: eventHeight = null }) => {
+    const height = eventHeight || jobMgr.currentJob?.height || 0;
     const reward = jobMgr.currentJob?.template?.coinbasevalue
       ? jobMgr.currentJob.template.coinbasevalue / 1e8 : 0;
     console.log(`\n🎉 *** BLOCK FOUND *** ${cfg.symbol} by ${workerName} at height ${height}\n`);
     ds.addBlock({
       poolId,
       height,
-      hash:   jobMgr._lastBlockHash || '',
+      hash: hashHex || jobMgr._lastBlockHash || '',
       reward: reward * 0.99,  // miner share (after 1% dev fee)
       effort: 0,
       miner:  workerName.split('.')[0],
       worker: workerName,
       status: 'pending',
-      confirmationProgress: 0
+      confirmationProgress: 0,
+      blockHex,
+      resubmitAttempts: 0
     });
     // Take a performance snapshot at block time
     ds.addPerfSnapshot({
@@ -198,6 +314,20 @@ async function main() {
   const startupCoins = [];
 
   for (const { key, cfg } of coins) {
+    if (!isCoinEnabledBySelection(key)) {
+      console.log(`[${cfg.symbol}] Disabled by launcher selection — skipping.`);
+      startupCoins.push({
+        key,
+        symbol: cfg.symbol,
+        started: false,
+        rpcPort: cfg.rpc.port,
+        stratumPort: cfg.stratumPort,
+        requestedStratumPort: cfg.stratumPort,
+        disabledBySelection: true
+      });
+      continue;
+    }
+
     if (!cfg.enabled) {
       console.log(`[${cfg.symbol}] Disabled — skipping (${key === 'doge2' ? 'waiting for chain params' : 'set enabled:true in config'})`);
       continue;
@@ -285,7 +415,7 @@ async function main() {
     };
 
     // Log and record DOGE2 AuxPoW blocks found via LC2 shares
-    lc2Instance.jobMgr.on('auxBlockFound', ({ coin, height }) => {
+    lc2Instance.jobMgr.on('auxBlockFound', ({ coin, height, blockHex = null, hashHex = null }) => {
       console.log(`\n🎉 *** DOGE2 AuxPoW BLOCK FOUND *** at height ${height}\n`);
       const poolId = 'doge2_solo1';
       const reward = doge2Instance.jobMgr.currentJob?.template?.coinbasevalue
@@ -293,13 +423,15 @@ async function main() {
       ds.addBlock({
         poolId,
         height,
-        hash:   doge2Instance.jobMgr._lastBlockHash || '',
+        hash: hashHex || doge2Instance.jobMgr._lastBlockHash || '',
         reward: reward * 0.99,
         effort: 0,
         miner:  'merge-mined',
         worker: 'merge-mined',
         status: 'pending',
-        confirmationProgress: 0
+        confirmationProgress: 0,
+        blockHex,
+        resubmitAttempts: 0
       });
     });
   }
@@ -316,6 +448,13 @@ async function main() {
       console.log(`[${s.symbol}] port=${s.port} miners=${s.connectedMiners} height=${s.currentHeight || 'N/A'} job=${s.currentJobId || 'none'}`);
     }
   }, 60000);
+
+  // Orphan monitor: track pending/orphaned blocks and auto-resubmit best-effort.
+  setInterval(() => {
+    monitorOrphansAndResubmit(running).catch(err => {
+      console.error(`[OrphanMonitor] ${err.message}`);
+    });
+  }, ORPHAN_RECHECK_MS);
 
   // Graceful shutdown
   process.on('SIGINT', () => {

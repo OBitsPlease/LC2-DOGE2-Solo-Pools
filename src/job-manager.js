@@ -103,23 +103,42 @@ class JobManager extends EventEmitter {
 
   async _poll() {
     try {
-      const template = await this.rpc.getBlockTemplate();
-      if (!template) return;
-
-      // Fetch network info for dashboard
+      let template = null;
       try {
-        const [miningInfo, netInfo] = await Promise.all([
+        template = await this.rpc.getBlockTemplate();
+      } catch (err) {
+        // Keep polling telemetry even if template is temporarily unavailable.
+        template = null;
+      }
+
+      // Fetch network/sync telemetry for dashboard status.
+      try {
+        const [miningInfo, netInfo, chainInfo] = await Promise.all([
           this.rpc.call('getmininginfo').catch(() => ({})),
-          this.rpc.call('getnetworkinfo').catch(() => ({}))
+          this.rpc.call('getnetworkinfo').catch(() => ({})),
+          this.rpc.getBlockchainInfo().catch(() => ({}))
         ]);
+
+        const blocks = Number.isFinite(chainInfo.blocks) ? chainInfo.blocks : null;
+        const headers = Number.isFinite(chainInfo.headers) ? chainInfo.headers : null;
+        const blocksBehind = (blocks !== null && headers !== null)
+          ? Math.max(0, headers - blocks)
+          : null;
+
         this._networkInfo = {
           networkHashrate:   miningInfo.networkhashps || 0,
-          blockHeight:       template.height,
-          networkDifficulty: template.difficulty || miningInfo.difficulty || 0,
-          connectedPeers:    netInfo.connections || 0
+          blockHeight:       template?.height || blocks || this.currentJob?.height || 0,
+          networkDifficulty: template?.difficulty || chainInfo.difficulty || miningInfo.difficulty || 0,
+          connectedPeers:    netInfo.connections || 0,
+          headers:           headers || 0,
+          verificationProgress: typeof chainInfo.verificationprogress === 'number' ? chainInfo.verificationprogress : 0,
+          initialBlockDownload: !!chainInfo.initialblockdownload,
+          blocksBehind:      blocksBehind
         };
         if (this.currentJob) Object.assign(this.currentJob, this._networkInfo);
       } catch (_) {}
+
+      if (!template) return;
 
       const newBlockHash = template.previousblockhash;
       const isNewBlock = newBlockHash !== this._lastBlockHash;
@@ -158,7 +177,7 @@ class JobManager extends EventEmitter {
         console.log(`[${this.coin.symbol}] New job ${job.id} (${reason})`);
       }
     } catch (err) {
-      console.error(`[${this.coin.symbol}] getblocktemplate failed: ${err.message}`);
+      console.error(`[${this.coin.symbol}] job poll failed: ${err.message}`);
     }
   }
 
@@ -352,7 +371,12 @@ class JobManager extends EventEmitter {
       const result = await this._auxJobMgr.rpc.call('submitblock', [auxBlockHex]);
       if (result === null || result === undefined || result === '') {
         console.log(`[DOGE2] 🎉 AuxPoW block ACCEPTED at height ${auxHeight}!`);
-        this.emit('auxBlockFound', { coin: 'DOGE2', height: auxHeight });
+        this.emit('auxBlockFound', {
+          coin: 'DOGE2',
+          height: auxHeight,
+          blockHex: auxBlockHex,
+          hashHex: null
+        });
       } else {
         console.error(`[DOGE2] Block rejected (height ${auxHeight}): ${result}`);
       }

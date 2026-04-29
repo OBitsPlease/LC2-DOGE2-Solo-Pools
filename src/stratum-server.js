@@ -288,7 +288,13 @@ class StratumServer extends EventEmitter {
         const submitResult = await this.jobManager.rpc.submitBlock(result.blockHex);
         if (submitResult === null || submitResult === undefined) {
           console.log(`[${this.config.symbol}] *** BLOCK ACCEPTED! ***`);
-          this.emit('blockFound', { workerName, coin: this.config.symbol });
+          this.emit('blockFound', {
+            workerName,
+            coin: this.config.symbol,
+            blockHex: result.blockHex,
+            hashHex: result.hashHex || null,
+            height: this.jobManager.currentJob?.height || null
+          });
         } else {
           console.log(`[${this.config.symbol}] Block rejected: ${submitResult}`);
         }

@@ -4,11 +4,12 @@ const http = require('http');
 const fs = require('fs');
 
 class RPCClient {
-  constructor({ host, port, user, password, gbtRules, cookieFile }) {
+  constructor({ host, port, user, password, gbtRules, cookieFile, preferCookieAuth = true }) {
     this.host = host;
     this.port = port;
     this.auth = Buffer.from(`${user}:${password}`).toString('base64');
     this.cookieFile = cookieFile || null;
+    this.preferCookieAuth = preferCookieAuth;
     this._id = 1;
     // Per-coin getblocktemplate rules. LC2 (LTC 0.21) needs mweb; DOGE2 does not.
     this._gbtRules = gbtRules || ['segwit'];
@@ -43,6 +44,9 @@ class RPCClient {
             const cookieAuth = this._readCookieAuth();
             if (cookieAuth && cookieAuth !== authHeaderValue) {
               return resolve(this._doRpcCall(body, cookieAuth, false));
+            }
+            if (this.auth && this.auth !== authHeaderValue) {
+              return resolve(this._doRpcCall(body, this.auth, false));
             }
           }
 
@@ -81,7 +85,9 @@ class RPCClient {
       params
     });
 
-    return this._doRpcCall(body, this.auth, true).catch(err => {
+    const initialAuth = this.preferCookieAuth ? (this._readCookieAuth() || this.auth) : this.auth;
+
+    return this._doRpcCall(body, initialAuth, true).catch(err => {
       if (err.message === 'RPC timeout') {
         throw new Error(`RPC timeout calling ${method}`);
       }
@@ -136,6 +142,10 @@ class RPCClient {
 
   async getNetworkInfo() {
     return this.call('getnetworkinfo', []);
+  }
+
+  async getBlockchainInfo() {
+    return this.call('getblockchaininfo', []);
   }
 }
 
