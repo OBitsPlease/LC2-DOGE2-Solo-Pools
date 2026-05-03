@@ -113,11 +113,18 @@ class JobManager extends EventEmitter {
 
       // Fetch network/sync telemetry for dashboard status.
       try {
-        const [miningInfo, netInfo, chainInfo] = await Promise.all([
+        const [miningInfo, netInfo, chainInfo, directNetworkHashps, directDifficulty] = await Promise.all([
           this.rpc.call('getmininginfo').catch(() => ({})),
           this.rpc.call('getnetworkinfo').catch(() => ({})),
-          this.rpc.getBlockchainInfo().catch(() => ({}))
+          this.rpc.getBlockchainInfo().catch(() => ({})),
+          this.rpc.call('getnetworkhashps').catch(() => null),
+          this.rpc.call('getdifficulty').catch(() => null)
         ]);
+
+        const asNumber = (v) => {
+          const n = Number(v);
+          return Number.isFinite(n) ? n : 0;
+        };
 
         const blocks = Number.isFinite(chainInfo.blocks) ? chainInfo.blocks : null;
         const headers = Number.isFinite(chainInfo.headers) ? chainInfo.headers : null;
@@ -125,10 +132,21 @@ class JobManager extends EventEmitter {
           ? Math.max(0, headers - blocks)
           : null;
 
+        const networkHashrate =
+          asNumber(miningInfo.networkhashps) ||
+          asNumber(directNetworkHashps) ||
+          asNumber(chainInfo.networkhashps);
+
+        const networkDifficulty =
+          asNumber(template?.difficulty) ||
+          asNumber(chainInfo.difficulty) ||
+          asNumber(miningInfo.difficulty) ||
+          asNumber(directDifficulty);
+
         this._networkInfo = {
-          networkHashrate:   miningInfo.networkhashps || 0,
+          networkHashrate,
           blockHeight:       template?.height || blocks || this.currentJob?.height || 0,
-          networkDifficulty: template?.difficulty || chainInfo.difficulty || miningInfo.difficulty || 0,
+          networkDifficulty,
           connectedPeers:    netInfo.connections || 0,
           headers:           headers || 0,
           verificationProgress: typeof chainInfo.verificationprogress === 'number' ? chainInfo.verificationprogress : 0,

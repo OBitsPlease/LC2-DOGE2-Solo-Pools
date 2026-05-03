@@ -167,6 +167,8 @@ function getPerfSnapshots(poolId, { range = 'Day', interval = 'Hour' } = {}) {
 
   return [...buckets.entries()].sort((a, b) => a[0] - b[0]).map(([ts, samples]) => {
     const avgHashrate = samples.reduce((s, x) => s + (x.hashrate || 0), 0) / samples.length;
+    const avgNetworkHashrate = samples.reduce((s, x) => s + (x.networkHashrate || 0), 0) / samples.length;
+    const avgDifficulty = samples.reduce((s, x) => s + (x.difficulty || 0), 0) / samples.length;
     const workers = {};
     // Merge worker maps
     for (const s of samples) {
@@ -180,7 +182,13 @@ function getPerfSnapshots(poolId, { range = 'Day', interval = 'Hour' } = {}) {
       workers[w].hashrate = workers[w].hashrate / workers[w].count;
       delete workers[w].count;
     }
-    return { created: new Date(ts).toISOString(), hashrate: avgHashrate, workers };
+    return {
+      created: new Date(ts).toISOString(),
+      hashrate: avgHashrate,
+      networkHashrate: avgNetworkHashrate,
+      difficulty: avgDifficulty,
+      workers
+    };
   });
 }
 
