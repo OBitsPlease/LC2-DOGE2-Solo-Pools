@@ -20,6 +20,7 @@ const coins = {
     color: '#5c9dca',
     logo: 'lc2-logo.png',
     blockReward: 50,
+    blockRewardNote: 'Current reward: 50 LC2 per block.',
     coinPrice: 0.012006,
 
     // Stratum port miners connect to (3333 is free)
@@ -63,6 +64,7 @@ const coins = {
     color: '#c2a633',
     logo: 'doge2-logo.png',
     blockReward: 500000,  // 500,000 DOGE2/block (early randomized phase)
+    blockRewardNote: 'Current reward: 500,000 DOGE2 per block. Halving in roughly 53 days to 250,000 DOGE2.',
 
     // DOGE2 is merge-mined from LC2 via AuxPoW — miners connect to LC2 stratum only
     mergedParent: 'lc2',

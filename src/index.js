@@ -19,8 +19,10 @@ const config          = require('./config');
 const dashboardServer = require('./dashboard-server');
 const ds              = require('./data-store');
 const net             = require('net');
+const os              = require('os');
 const path            = require('path');
 const fs              = require('fs');
+const { execFile }    = require('child_process');
 
 const ORPHAN_LOG_DIR = path.join(path.dirname(ds.getDataDir()), 'logs');
 const ORPHAN_EVENT_LOG = path.join(ORPHAN_LOG_DIR, 'orphan-events.log');
@@ -83,6 +85,81 @@ function writeStartupSummary(payload) {
   fs.mkdirSync(path.dirname(outPath), { recursive: true });
   fs.writeFileSync(outPath, JSON.stringify(payload, null, 2));
   console.log(`[Startup] Summary written: ${outPath}`);
+}
+
+function getLanIpv4Address() {
+  const interfaces = os.networkInterfaces();
+  for (const addresses of Object.values(interfaces)) {
+    for (const entry of addresses || []) {
+      if (entry && entry.family === 'IPv4' && !entry.internal) {
+        return entry.address;
+      }
+    }
+  }
+  return '127.0.0.1';
+}
+
+function buildMinerConnectionInfo({ dashboardPort, startupCoins }) {
+  const lanIp = getLanIpv4Address();
+  const startedCoins = startupCoins.filter(coin => coin.started);
+  const lines = [];
+
+  lines.push('============================================================');
+  lines.push('  LC2/DOGE2 SOLO MINER - LIVE CONNECTION INFO');
+  lines.push('============================================================');
+  lines.push('');
+  lines.push('Type these exact addresses into miners on the same network:');
+  lines.push('');
+
+  for (const coin of startedCoins) {
+    const lanEndpoint = `stratum+tcp://${lanIp}:${coin.stratumPort}`;
+    lines.push(`${coin.symbol}: ${lanEndpoint}`);
+    if (Number.isFinite(coin.blockReward)) {
+      const reward = Number.isInteger(coin.blockReward)
+        ? coin.blockReward.toLocaleString()
+        : coin.blockReward.toFixed(4);
+      lines.push(`  Block reward: ${reward} ${coin.symbol}`);
+    }
+    if (coin.blockRewardNote) {
+      lines.push(`  ${coin.blockRewardNote}`);
+    }
+    if (coin.key === 'doge2' && config.doge2.mergedParent === 'lc2') {
+      lines.push('  Note: DOGE2 is merge-mined through LC2. Most miners should use the LC2 address above.');
+    }
+    lines.push('');
+  }
+
+  lines.push('If your miner does not accept addresses with stratum+tcp://, try the same address without it.');
+  lines.push(`Example: ${lanIp}:${startedCoins[0] ? startedCoins[0].stratumPort : 3333}`);
+  lines.push('');
+
+  lines.push(`Dashboard: http://${lanIp}:${dashboardPort}/`);
+  lines.push(`Local dashboard: http://127.0.0.1:${dashboardPort}/`);
+  lines.push('');
+  lines.push('If a miner is running on this same PC, you can also use 127.0.0.1 instead of the LAN IP.');
+  lines.push('');
+  lines.push('Generated: ' + new Date().toLocaleString());
+
+  return lines.join('\n');
+}
+
+function writeMinerConnectionInfo(payload) {
+  const outPath = path.join(ds.getDataDir(), 'MINER-CONNECTION-INFO.txt');
+  fs.mkdirSync(path.dirname(outPath), { recursive: true });
+  fs.writeFileSync(outPath, buildMinerConnectionInfo(payload));
+  console.log(`[Startup] Connection info written: ${outPath}`);
+  return outPath;
+}
+
+function openTextDocument(filePath) {
+  if (process.platform !== 'win32') return;
+  execFile('notepad.exe', [filePath], err => {
+    if (err) {
+      console.error(`[Startup] Failed to open connection info: ${err.message}`);
+      return;
+    }
+    console.log(`[Startup] Opened connection info: ${filePath}`);
+  });
 }
 
 function reverseHex(hex) {
@@ -323,6 +400,8 @@ async function main() {
         rpcPort: cfg.rpc.port,
         stratumPort: cfg.stratumPort,
         requestedStratumPort: cfg.stratumPort,
+        blockReward: cfg.blockReward,
+        blockRewardNote: cfg.blockRewardNote,
         disabledBySelection: true
       });
       continue;
@@ -349,7 +428,9 @@ async function main() {
         started: true,
         rpcPort: cfg.rpc.port,
         stratumPort: cfg.stratumPort,
-        requestedStratumPort: requestedPort
+        requestedStratumPort: requestedPort,
+        blockReward: cfg.blockReward,
+        blockRewardNote: cfg.blockRewardNote
       });
     } catch (err) {
       console.error(`[${cfg.symbol}] Failed to start: ${err.message}`);
@@ -360,6 +441,8 @@ async function main() {
         rpcPort: cfg.rpc.port,
         stratumPort: cfg.stratumPort,
         requestedStratumPort: requestedPort,
+        blockReward: cfg.blockReward,
+        blockRewardNote: cfg.blockRewardNote,
         error: err.message
       });
       // Don't exit — other coins may still work
@@ -387,6 +470,12 @@ async function main() {
     },
     coins: startupCoins
   });
+
+  const connectionInfoPath = writeMinerConnectionInfo({
+    dashboardPort: dashPort,
+    startupCoins
+  });
+  openTextDocument(connectionInfoPath);
 
   if (running.length === 0) {
     console.error('\nNo coins started. Please edit src/config.js and try again.');

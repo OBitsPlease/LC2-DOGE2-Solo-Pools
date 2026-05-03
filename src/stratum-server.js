@@ -168,7 +168,9 @@ class StratumServer extends EventEmitter {
 
     client.on('message', msg => {
       if (process.env.STRATUM_DEBUG) console.log(`[${this.config.symbol}] >> ${JSON.stringify(msg)}`);
-      this._handleMessage(client, msg);
+      Promise.resolve(this._handleMessage(client, msg)).catch(err => {
+        console.error(`[${this.config.symbol}] Stratum handler error: ${err.message}`);
+      });
     });
     client.on('disconnect', () => {
       this.clients.delete(id);
@@ -177,7 +179,16 @@ class StratumServer extends EventEmitter {
   }
 
   _handleMessage(client, msg) {
+    if (!msg || typeof msg !== 'object') {
+      return;
+    }
+
     const { id, method, params } = msg;
+
+    if (!method || typeof method !== 'string') {
+      client.sendError(id ?? null, 20, 'Invalid request: missing method');
+      return;
+    }
 
     switch (method) {
       case 'mining.subscribe':
@@ -241,6 +252,11 @@ class StratumServer extends EventEmitter {
   }
 
   _handleAuthorize(client, id, params) {
+    if (!Array.isArray(params) || params.length < 1) {
+      client.sendError(id, 20, 'Invalid authorize params');
+      return;
+    }
+
     const workerName = params && params[0] ? params[0] : 'anonymous';
     client.workerName = workerName;
     client.authorized = true;
@@ -258,6 +274,10 @@ class StratumServer extends EventEmitter {
   async _handleSubmit(client, id, params) {
     if (!client.authorized) {
       return client.sendError(id, 24, 'Unauthorized');
+    }
+
+    if (!Array.isArray(params) || params.length < 5) {
+      return client.sendError(id, 20, 'Invalid submit params');
     }
 
     const [workerName, jobId, extraNonce2, ntime, nonce] = params;

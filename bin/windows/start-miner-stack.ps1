@@ -557,6 +557,11 @@ Current Stratum Endpoints:
   LC2   -> stratum+tcp://127.0.0.1:$lc2Port
   DOGE2 -> stratum+tcp://127.0.0.1:$doge2Port
 
+Block Rewards:
+    LC2   -> 50 LC2 per block
+    DOGE2 -> 500,000 DOGE2 per block
+    DOGE2 halving in roughly 53 days -> 250,000 DOGE2 per block
+
 Launch Selection:
     LC2 enabled:   $($selection.lc2)
     DOGE2 enabled: $($selection.doge2)
@@ -568,6 +573,8 @@ Notes:
 - These ports are selected automatically at startup.
 - If default ports are busy, fallback ports are used.
 - Latest values are saved in data\startup-summary.json.
+- If your miner rejects stratum+tcp://, try the same host:port without it.
+- Example: 127.0.0.1:$lc2Port
 
 Dev Fee:
 - 1% locked in app code.

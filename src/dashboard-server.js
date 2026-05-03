@@ -6,6 +6,20 @@ const ds            = require('./data-store');
 const config        = require('./config');
 const updateChecker = require('./update-checker');
 
+function getRuntimeRoot() {
+  if (process.env.LOCALAPPDATA) {
+    return path.join(process.env.LOCALAPPDATA, 'LC2 DOGE2 Solo Miner');
+  }
+  if (process.env.APPDATA) {
+    return path.join(process.env.APPDATA, 'LC2 DOGE2 Solo Miner');
+  }
+  return path.resolve(__dirname, '..');
+}
+
+function getStopAllRequestPath() {
+  return path.join(getRuntimeRoot(), 'data', 'stop-all-request.json');
+}
+
 // ─── Pool metadata (what /dashboard/pools-meta returns) ────────────────────
 function buildPoolsMeta() {
   return Object.entries(config.coins)
@@ -19,6 +33,7 @@ function buildPoolsMeta() {
       logo:        c.logo  || null,
       hashUnit:    'KH/s',
       blockReward: c.blockReward || 0,
+      blockRewardNote: c.blockRewardNote || '',
       stratumPort: c.stratumPort,
       algorithm:   'Scrypt',
       devFee:      1
@@ -119,6 +134,8 @@ function getLivePoolStats(poolId) {
       },
       totalBlocks:      ds.countBlocks(poolId),
       totalPaid:        ds.totalPaid(poolId),
+      blockReward:      coin.blockReward || 0,
+      blockRewardNote:  coin.blockRewardNote || '',
       lastPoolBlockTime: null,
       poolEffort:       0,
       poolFeePercent:   1,
@@ -440,6 +457,29 @@ route('POST', '/dashboard/workers', async (req, res) => {
 route('DELETE', '/dashboard/workers/:name', (req, res, rp) => {
   ds.deleteWorker(decodeURIComponent(rp.name));
   jsonOk(res, { success: true });
+});
+
+route('POST', '/dashboard/stop-all', async (req, res) => {
+  try {
+    const bodyText = await readBody(req);
+    const body = bodyText ? JSON.parse(bodyText) : {};
+    const reason = (body.reason || 'dashboard-stop-all').toString().slice(0, 120);
+    const outPath = getStopAllRequestPath();
+    fs.mkdirSync(path.dirname(outPath), { recursive: true });
+    fs.writeFileSync(outPath, JSON.stringify({
+      requestedAt: new Date().toISOString(),
+      requestedBy: 'dashboard',
+      reason,
+      requesterPid: process.pid
+    }, null, 2));
+    jsonOk(res, {
+      success: true,
+      message: 'Stop request queued. Watchdog will stop proxy and daemons.',
+      requestPath: outPath
+    });
+  } catch (e) {
+    jsonErr(res, 500, e.message || 'Failed to queue stop request');
+  }
 });
 
 route('GET', '/dashboard/shares-stream', (req, res, rp, qp) => {

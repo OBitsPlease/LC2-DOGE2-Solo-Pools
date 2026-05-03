@@ -105,6 +105,8 @@
   .btn:hover { opacity: .85; }
   .btn:disabled { opacity: .4; cursor: not-allowed; }
   .btn-sm { padding: 4px 10px; font-size: 11px; }
+  .btn-danger { background: var(--red); color: #fff; border: 1px solid rgba(248,81,73,.55); }
+  .btn-danger:hover { opacity: .9; }
   .alert { padding: 8px 12px; border-radius: 6px; font-size: 12px; margin-top: 8px; }
   .alert-ok  { background: rgba(63,185,80,.15);  color: var(--green); border: 1px solid rgba(63,185,80,.3); }
   .alert-err { background: rgba(248,81,73,.15);  color: var(--red);   border: 1px solid rgba(248,81,73,.3); }
@@ -268,7 +270,10 @@
     <div style="display:flex;flex-direction:column;gap:16px">
       <!-- HEALTH PANEL -->
       <div class="panel">
-        <div class="panel-header">System Health</div>
+        <div class="panel-header">
+          <span>System Health</span>
+          <button id="stop-all-btn" class="btn btn-sm btn-danger" onclick="stopAllFromDashboard()">Stop Proxy + Daemons</button>
+        </div>
         <div class="panel-body">
           <div class="health-row">
             <span class="health-label">Stratum Proxy API</span>
@@ -606,6 +611,30 @@ let allMiners     = [];
 let poolConfig    = {};
 let walletStatsCache = null;
 
+async function stopAllFromDashboard() {
+  const btn = document.getElementById('stop-all-btn');
+  if (!btn) return;
+  const ok = confirm('Stop proxy and both daemons now?\n\nThis will fully stop mining services until you launch the app again.');
+  if (!ok) return;
+
+  btn.disabled = true;
+  btn.textContent = 'Stopping...';
+  try {
+    const r = await fetch('/dashboard/stop-all', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason: 'user-clicked-stop-all' })
+    });
+    const d = await r.json();
+    if (!r.ok || !d.success) throw new Error(d.error || 'Failed to request shutdown');
+    alert('Shutdown request sent. Proxy and daemons will stop within the watchdog check window (usually under 30 seconds).');
+  } catch (e) {
+    alert('Failed to stop services: ' + (e.message || 'unknown error'));
+    btn.disabled = false;
+    btn.textContent = 'Stop Proxy + Daemons';
+  }
+}
+
 // ─── UTILS ─────────────────────────────────────────────────────────────────
 function savedDestinationsKey() { return `savedDestinations.${POOL_ID}`; }
 function getSavedDestinations() {
@@ -676,6 +705,11 @@ function fmtTime(ts) {
     return d.toLocaleDateString();
 }
 function fmtAddr(a) { if (!a) return '–'; return a.length > 20 ? a.slice(0,10)+'…'+a.slice(-8) : a; }
+function fmtReward(v) {
+  if (!Number.isFinite(v)) return '–';
+  if (Number.isInteger(v)) return v.toLocaleString();
+  return v.toFixed(4);
+}
 function setEl(id, val) { const el = document.getElementById(id); if (el) el.textContent = val; }
 async function get(url) { const r = await fetch(url); if (!r.ok) throw new Error(r.statusText); return r.json(); }
 
@@ -763,8 +797,11 @@ async function loadPoolStats() {
         setEl('h-fee', (pool.poolFeePercent || 1) + '%');
 
         // Block reward from config or pool meta
-        const reward = pool.blockReward || 0;
-        if (reward) setEl('block-reward', reward.toFixed(4) + ' ' + POOL_SYMBOL);
+        const reward = Number(pool.blockReward || 0);
+        if (reward) {
+          setEl('block-reward', fmtReward(reward) + ' ' + POOL_SYMBOL);
+          setEl('block-reward-sub', pool.blockRewardNote || 'per block found');
+        }
 
         // Luck / effort
         const effort = pool.poolEffort;

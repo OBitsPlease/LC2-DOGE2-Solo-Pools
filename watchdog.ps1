@@ -72,6 +72,7 @@ $Doge2Err    = Join-Path $RuntimeLogDir 'doge2-err.log'
 $StartupSummaryPath = Join-Path $RuntimeRoot 'data\startup-summary.json'
 $StatusPath = Join-Path $RuntimeRoot 'RUNTIME-STATUS.txt'
 $DaemonSelectionPath = Join-Path $RuntimeRoot 'data\daemon-selection.json'
+$StopAllRequestPath = Join-Path $RuntimeRoot 'data\stop-all-request.json'
 $WatchdogVersion = '2026-04-28.9'
 
 $Doge2BootstrapNodeFiles = @(
@@ -765,6 +766,31 @@ function Stop-ManagedProcesses($processRecords) {
     }
 }
 
+function Read-StopAllRequest {
+    if (-not (Test-Path $StopAllRequestPath)) { return $null }
+    try {
+        $raw = Get-Content -Raw -Path $StopAllRequestPath -ErrorAction Stop
+        if (-not $raw) { return @{ reason = 'dashboard-stop-all' } }
+        $obj = $raw | ConvertFrom-Json
+        return $obj
+    } catch {
+        Write-Log "WARNING: Failed to parse stop-all request: $($_.Exception.Message)"
+        return @{ reason = 'dashboard-stop-all' }
+    } finally {
+        Remove-Item -Path $StopAllRequestPath -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Stop-AllComponents {
+    # Best-effort daemon RPC stop first, then process kill fallback.
+    try { Invoke-RpcMethod 9222 'lc2rpc' '7ezB1EwlQf4iKJGba85ymAgo' 'stop' | Out-Null } catch {}
+    try { Invoke-RpcMethod $Doge2RpcPort $Doge2RpcUser $Doge2RpcPass 'stop' @() $Doge2CookieFile | Out-Null } catch {}
+
+    Stop-ManagedProcesses (Get-ProxyManagedProcesses)
+    Stop-ManagedProcesses (Get-LC2ManagedProcesses)
+    Stop-ManagedProcesses (Get-Doge2ManagedProcesses)
+}
+
 function Get-LC2ManagedProcesses {
     return Get-ManagedProcesses -processNames @('litecoinIId') -pathHints @($LC2Exe) -commandLineHints @($LC2Exe, 'litecoinIId.exe', '-rpcport=9222')
 }
@@ -805,6 +831,31 @@ function Get-ManagedDashboardPort {
         return [int]$summary.dashboard.port
     }
     return $null
+}
+
+function Get-RecoveredCoinSummaryGaps($lc2RpcOk, $doge2RpcOk) {
+    $summary = Get-StartupSummary
+    if (-not $summary -or -not $summary.coins) {
+        return @()
+    }
+
+    $gaps = @()
+
+    if ($EnableLC2 -and $lc2RpcOk) {
+        $lc2Summary = @($summary.coins | Where-Object { $_.key -eq 'lc2' } | Select-Object -First 1)[0]
+        if ($lc2Summary -and -not $lc2Summary.started) {
+            $gaps += 'LC2'
+        }
+    }
+
+    if ($EnableDOGE2 -and $doge2RpcOk) {
+        $doge2Summary = @($summary.coins | Where-Object { $_.key -eq 'doge2' } | Select-Object -First 1)[0]
+        if ($doge2Summary -and -not $doge2Summary.started) {
+            $gaps += 'DOGE2'
+        }
+    }
+
+    return @($gaps | Select-Object -Unique)
 }
 
 function Resolve-NodeExePath {
@@ -1052,6 +1103,16 @@ $doge2NoPeerCycles = 0
 
 while ($true) {
 
+    $stopReq = Read-StopAllRequest
+    if ($stopReq) {
+        $reason = if ($stopReq.reason) { [string]$stopReq.reason } else { 'dashboard-stop-all' }
+        Write-Log "STOP requested by dashboard. Reason=$reason"
+        Write-ProxyEvent "STOP-ALL requested reason=$reason"
+        Stop-AllComponents
+        Write-Log 'STOP completed. Watchdog exiting by user request.'
+        break
+    }
+
     # 1. LC2 daemon
     $lc2Proc = Get-LC2ManagedProcesses
     $lc2RpcOk = $false
@@ -1121,6 +1182,7 @@ while ($true) {
     # 3. Stratum proxy - check only this app's managed proxy/ports
     $proxyProc = Get-ProxyManagedProcesses
     $managedStratumPorts = Get-ManagedStratumPorts
+    $recoveredCoinSummaryGaps = Get-RecoveredCoinSummaryGaps $lc2RpcOk $doge2RpcOk
     $missingManagedPorts = @()
     if ($managedStratumPorts.Count -gt 0) {
         foreach ($p in $managedStratumPorts) {
@@ -1134,6 +1196,10 @@ while ($true) {
         Write-Log "ALERT: Managed stratum proxy is not running - restarting proxy."
         Write-ProxyEvent "ALERT process-missing"
         Start-Proxy -reason 'process-missing'
+    } elseif ($recoveredCoinSummaryGaps.Count -gt 0) {
+        Write-Log "ALERT: Recovered daemon(s) missing from startup summary ($($recoveredCoinSummaryGaps -join ', ')) - restarting proxy."
+        Write-ProxyEvent "ALERT recovered-daemon-summary-gap coins=$($recoveredCoinSummaryGaps -join ',')"
+        Start-Proxy -reason 'recovered-daemon-summary-gap'
     } elseif ($managedStratumPorts.Count -gt 0 -and $missingManagedPorts.Count -gt 0) {
         Write-Log "ALERT: Managed stratum ports down ($($missingManagedPorts -join ', ')); expected up ($($managedStratumPorts -join ', ')) - restarting proxy."
         Write-ProxyEvent "ALERT ports-down missing=$($missingManagedPorts -join ',') expected=$($managedStratumPorts -join ',')"
