@@ -107,11 +107,15 @@ function getLivePoolStats(poolId) {
   const { coinId, coin } = getCoinForPool(poolId);
   if (!coin || !coin.enabled) return null;
   const mgr = managers[coinId];
+  const parentMgr = coin?.mergedParent ? managers[coin.mergedParent] : null;
   const poolHashrate = mgr?.jobManager?.getPoolHashrate?.() || 0;
-  const connectedMiners = mgr?.stratumServer?.getConnectedCount?.() || 0;
+  const connectedMiners = (mgr?.stratumServer?.getConnectedCount?.() || 0)
+    || (parentMgr?.stratumServer?.getConnectedCount?.() || 0);
   const validSharesPerSecond = ds.getSharesRate(poolId);
   const jobInfo = mgr?.jobManager?.currentJob || {};
   const netInfo = mgr?.jobManager?._networkInfo || {};
+  const networkDifficulty = jobInfo.difficulty || netInfo.networkDifficulty || 0;
+  const poolEffort = ds.getRoundEffort(poolId, networkDifficulty);
   return {
     pool: {
       id: poolId,
@@ -125,7 +129,7 @@ function getLivePoolStats(poolId) {
       networkStats: {
         networkHashrate:    jobInfo.networkHashrate   || netInfo.networkHashrate || 0,
         blockHeight:        jobInfo.height            || netInfo.blockHeight || 0,
-        networkDifficulty:  jobInfo.difficulty        || netInfo.networkDifficulty || 0,
+        networkDifficulty,
         connectedPeers:     jobInfo.connectedPeers    || netInfo.connectedPeers || 0,
         headers:            netInfo.headers || 0,
         verificationProgress: typeof netInfo.verificationProgress === 'number' ? netInfo.verificationProgress : 0,
@@ -137,7 +141,7 @@ function getLivePoolStats(poolId) {
       blockReward:      coin.blockReward || 0,
       blockRewardNote:  coin.blockRewardNote || '',
       lastPoolBlockTime: null,
-      poolEffort:       0,
+      poolEffort,
       poolFeePercent:   1,
       paymentProcessing: {
         minimumPayment: ds.getPoolConfig(poolId).minimumPayment

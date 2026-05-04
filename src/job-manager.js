@@ -4,6 +4,7 @@ const EventEmitter = require('events');
 const { buildCoinbaseSplit, coinbaseTxid, EXTRA_NONCE_1_LEN } = require('./coinbase-builder');
 const { dsha256, reverseHex, merkleRoot, bitsToTarget } = require('./utils');
 const { buildAuxHeader, computeAuxHash, buildMergedMiningCommitment, buildAuxPowBlock } = require('./auxpow-builder');
+const { writeDiagnosticLog } = require('./diagnostic-logger');
 
 /**
  * JobManager polls getblocktemplate from the coin daemon,
@@ -28,6 +29,11 @@ class JobManager extends EventEmitter {
     this._auxJobMgr = null;         // DOGE2 JobManager instance
     this._currentAuxData = null;    // latest DOGE2 template + header bytes
     this._lastAuxBlockHash = null;  // detect DOGE2 block changes
+    this._auxCandidates = 0;
+    this._auxSubmits = 0;
+    this._auxAccepted = 0;
+    this._auxRejected = 0;
+    this._auxErrors = 0;
     // Merge mining: set when this chain is the AUX (DOGE2)
     this._parentJobMgr = null;      // LC2 JobManager instance (for hashrate passthrough)
   }
@@ -277,9 +283,9 @@ class JobManager extends EventEmitter {
     // If this chain is merge-mined by a parent (e.g. DOGE2 via LC2), use the parent's hashrate
     if (this._parentJobMgr) return this._parentJobMgr.getPoolHashrate();
 
-    // Scrypt ASIC diff1 constant: empirically ~2^27 (not 2^32 which is for SHA256).
+    // Scrypt ASIC diff1 constant: calibrated for dashboard parity with common ASIC firmware.
     // Formula: hashrate = sum(share_difficulties) * SCRYPT_DIFF1 / window_seconds
-    const SCRYPT_DIFF1 = 134217728; // 2^27
+    const SCRYPT_DIFF1 = 268435456; // 2^28
     const now = Date.now();
     this._shareWindow = this._shareWindow.filter(s => now - s.ts < 30000);
     const totalDiff = this._shareWindow.reduce((sum, s) => sum + s.diff, 0);
@@ -337,7 +343,23 @@ class JobManager extends EventEmitter {
     // Check DOGE2 AuxPoW merge mining (same Scrypt hash, checked against DOGE2 target)
     if (job.auxData) {
       if (hashBigInt <= job.auxData.target) {
+        this._auxCandidates++;
+        writeDiagnosticLog('aux-candidate-hit', {
+          parent: this.coin.symbol,
+          aux: this._auxJobMgr?.coin?.symbol || 'DOGE2',
+          height: job.auxData?.template?.height || null,
+          parentHeight: job.height || null,
+          candidates: this._auxCandidates,
+          shareDiff: sharesDiff || 1
+        });
         this._submitAuxBlock(job, extraNonce1Hex, extraNonce2Hex, header).catch(err => {
+          this._auxErrors++;
+          writeDiagnosticLog('aux-submit-exception', {
+            aux: this._auxJobMgr?.coin?.symbol || 'DOGE2',
+            height: job.auxData?.template?.height || null,
+            errors: this._auxErrors,
+            error: err.message
+          });
           console.error(`[DOGE2] AuxPoW submit failed: ${err.message}`);
         });
       }
@@ -386,8 +408,25 @@ class JobManager extends EventEmitter {
     });
 
     try {
+      this._auxSubmits++;
+      writeDiagnosticLog('aux-submit-attempt', {
+        aux: this._auxJobMgr?.coin?.symbol || 'DOGE2',
+        height: auxHeight,
+        submits: this._auxSubmits,
+        candidates: this._auxCandidates,
+        parentHeight: lc2Job?.height || null
+      });
+
       const result = await this._auxJobMgr.rpc.call('submitblock', [auxBlockHex]);
       if (result === null || result === undefined || result === '') {
+        this._auxAccepted++;
+        writeDiagnosticLog('aux-submit-accepted', {
+          aux: this._auxJobMgr?.coin?.symbol || 'DOGE2',
+          height: auxHeight,
+          accepted: this._auxAccepted,
+          submits: this._auxSubmits,
+          candidates: this._auxCandidates
+        });
         console.log(`[DOGE2] 🎉 AuxPoW block ACCEPTED at height ${auxHeight}!`);
         this.emit('auxBlockFound', {
           coin: 'DOGE2',
@@ -396,9 +435,27 @@ class JobManager extends EventEmitter {
           hashHex: null
         });
       } else {
+        this._auxRejected++;
+        writeDiagnosticLog('aux-submit-rejected', {
+          aux: this._auxJobMgr?.coin?.symbol || 'DOGE2',
+          height: auxHeight,
+          rejected: this._auxRejected,
+          submits: this._auxSubmits,
+          candidates: this._auxCandidates,
+          result: String(result)
+        });
         console.error(`[DOGE2] Block rejected (height ${auxHeight}): ${result}`);
       }
     } catch (err) {
+      this._auxErrors++;
+      writeDiagnosticLog('aux-submit-rpc-error', {
+        aux: this._auxJobMgr?.coin?.symbol || 'DOGE2',
+        height: auxHeight,
+        errors: this._auxErrors,
+        submits: this._auxSubmits,
+        candidates: this._auxCandidates,
+        error: err.message
+      });
       console.error(`[DOGE2] submitblock RPC error: ${err.message}`);
     }
   }

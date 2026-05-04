@@ -354,7 +354,13 @@ async function startCoin(key, cfg) {
     const result = origProcess(...args);
     if (result.valid) {
       const workerName = args[5] || 'unknown';
-      ds.addShare({ poolId, worker: workerName, valid: true });
+      const shareDiff = Number(args[6] || 1);
+      ds.addShare({
+        poolId,
+        worker: workerName,
+        valid: true,
+        diff: Number.isFinite(shareDiff) && shareDiff > 0 ? shareDiff : 1
+      });
     }
     return result;
   };
@@ -498,7 +504,13 @@ async function main() {
       const result = origLc2Process(...args);
       if (result.valid) {
         const workerName = args[5] || 'unknown';
-        ds.addShare({ poolId: 'doge2_solo1', worker: workerName, valid: true });
+        const shareDiff = Number(args[6] || 1);
+        ds.addShare({
+          poolId: 'doge2_solo1',
+          worker: workerName,
+          valid: true,
+          diff: Number.isFinite(shareDiff) && shareDiff > 0 ? shareDiff : 1
+        });
       }
       return result;
     };

@@ -3,6 +3,7 @@
 const net = require('net');
 const EventEmitter = require('events');
 const { EXTRA_NONCE_1_LEN } = require('./coinbase-builder');
+const { writeDiagnosticLog, getDiagnosticLogPath } = require('./diagnostic-logger');
 
 let _extraNonce1Counter = (Math.floor(Date.now() / 1000) ^ 0xdeadbeef) >>> 0;
 
@@ -19,7 +20,11 @@ const VARDIFF_RETARGET_MS  = 60000; // re-evaluate every 60 seconds
 const VARDIFF_WINDOW_MS    = 120000; // look at shares from last 2 minutes
 const VARDIFF_MIN_DIFF     = 1;
 const VARDIFF_MAX_DIFF     = 2000000;
-const SCRYPT_DIFF1         = 134217728; // 2^27
+const SCRYPT_DIFF1         = 268435456; // 2^28
+const MAX_TOTAL_CLIENTS    = 128;
+const MAX_CLIENTS_PER_IP   = 24;
+const UNAUTHORIZED_IDLE_MS = 45000;
+const AUTHORIZED_IDLE_MS   = 300000;
 
 // Round difficulty to a clean value to avoid noise (nearest power-of-2 up to 64, then multiples of 64)
 function roundDiff(d) {
@@ -51,14 +56,21 @@ class StratumClient extends EventEmitter {
     this._shareTimes = [];   // timestamps of accepted shares (60s window)
     this._vardiffTimer = null;
     this._buffer = '';
+    this.lastActivity = Date.now();
+    this.acceptedShares = 0;
+    this.rejectedShares = 0;
+    this.staleShares = 0;
+    this.connectedAt = Date.now();
 
     socket.setEncoding('utf8');
+    socket.setNoDelay(true);
     socket.on('data', data => this._onData(data));
     socket.on('close', () => this.emit('disconnect'));
     socket.on('error', err => this.emit('disconnect', err));
   }
 
   _onData(data) {
+    this.lastActivity = Date.now();
     this._buffer += data;
     const lines = this._buffer.split('\n');
     this._buffer = lines.pop(); // incomplete line stays in buffer
@@ -139,6 +151,13 @@ class StratumServer extends EventEmitter {
     this.clients = new Map();
     this._clientId = 0;
     this._server = null;
+    this._maintenanceTimer = null;
+    this._summaryTimer = null;
+    this._peakClients = 0;
+    this._acceptedShares = 0;
+    this._rejectedShares = 0;
+    this._staleShares = 0;
+    this._blocksFound = 0;
 
     jobManager.on('newJob', (job, cleanJobs) => {
       this._broadcastJob(job, cleanJobs);
@@ -150,21 +169,123 @@ class StratumServer extends EventEmitter {
       this._server = net.createServer(socket => this._onConnect(socket));
       this._server.on('error', reject);
       this._server.listen(this.config.stratumPort, '0.0.0.0', () => {
+        this._maintenanceTimer = setInterval(() => this._pruneIdleClients(), 15000);
+        this._summaryTimer = setInterval(() => this._writeSummary(), 15000);
         console.log(`[${this.config.symbol}] Stratum server listening on port ${this.config.stratumPort}`);
+        writeDiagnosticLog('stratum-start', {
+          symbol: this.config.symbol,
+          port: this.config.stratumPort,
+          maxTotalClients: MAX_TOTAL_CLIENTS,
+          maxClientsPerIp: MAX_CLIENTS_PER_IP,
+          unauthorizedIdleMs: UNAUTHORIZED_IDLE_MS,
+          authorizedIdleMs: AUTHORIZED_IDLE_MS,
+          logPath: getDiagnosticLogPath()
+        });
         resolve();
       });
     });
   }
 
   stop() {
+    writeDiagnosticLog('stratum-stop', {
+      symbol: this.config.symbol,
+      connectedClients: this.clients.size,
+      peakClients: this._peakClients,
+      acceptedShares: this._acceptedShares,
+      rejectedShares: this._rejectedShares,
+      staleShares: this._staleShares,
+      blocksFound: this._blocksFound
+    });
+
+    if (this._maintenanceTimer) {
+      clearInterval(this._maintenanceTimer);
+      this._maintenanceTimer = null;
+    }
+    if (this._summaryTimer) {
+      clearInterval(this._summaryTimer);
+      this._summaryTimer = null;
+    }
+    for (const [, c] of this.clients) c.destroy();
+    this.clients.clear();
     if (this._server) this._server.close();
   }
 
+  _writeSummary() {
+    const authorized = [...this.clients.values()].filter(c => c.authorized).length;
+    const rssMb = Math.round((process.memoryUsage().rss / (1024 * 1024)) * 10) / 10;
+    writeDiagnosticLog('stratum-summary', {
+      symbol: this.config.symbol,
+      connectedClients: this.clients.size,
+      authorizedClients: authorized,
+      peakClients: this._peakClients,
+      acceptedShares: this._acceptedShares,
+      rejectedShares: this._rejectedShares,
+      staleShares: this._staleShares,
+      blocksFound: this._blocksFound,
+      rssMb
+    });
+  }
+
+  _pruneIdleClients() {
+    const now = Date.now();
+    for (const [id, c] of this.clients) {
+      const idleMs = now - (c.lastActivity || now);
+      const limit = c.authorized ? AUTHORIZED_IDLE_MS : UNAUTHORIZED_IDLE_MS;
+      if (idleMs > limit) {
+        writeDiagnosticLog('client-pruned-idle', {
+          symbol: this.config.symbol,
+          clientId: id,
+          remoteAddress: c.socket?.remoteAddress || 'unknown',
+          workerName: c.workerName || null,
+          idleMs,
+          authorized: !!c.authorized
+        });
+        c.destroy();
+        this.clients.delete(id);
+      }
+    }
+  }
+
   _onConnect(socket) {
+    if (this.clients.size >= MAX_TOTAL_CLIENTS) {
+      try { socket.destroy(); } catch (_) {}
+      console.warn(`[${this.config.symbol}] Connection refused: max total clients reached (${MAX_TOTAL_CLIENTS})`);
+      writeDiagnosticLog('connection-refused-total-limit', {
+        symbol: this.config.symbol,
+        maxTotalClients: MAX_TOTAL_CLIENTS,
+        connectedClients: this.clients.size,
+        remoteAddress: socket.remoteAddress || 'unknown'
+      });
+      return;
+    }
+
+    const remoteIp = socket.remoteAddress || 'unknown';
+    const sameIpCount = [...this.clients.values()].filter(c => c.socket?.remoteAddress === remoteIp).length;
+    if (sameIpCount >= MAX_CLIENTS_PER_IP) {
+      try { socket.destroy(); } catch (_) {}
+      console.warn(`[${this.config.symbol}] Connection refused: too many clients from ${remoteIp} (${sameIpCount})`);
+      writeDiagnosticLog('connection-refused-ip-limit', {
+        symbol: this.config.symbol,
+        remoteAddress: remoteIp,
+        sameIpCount,
+        maxClientsPerIp: MAX_CLIENTS_PER_IP
+      });
+      return;
+    }
+
     const id = ++this._clientId;
     const client = new StratumClient(socket, id);
     this.clients.set(id, client);
+    this._peakClients = Math.max(this._peakClients, this.clients.size);
     console.log(`[${this.config.symbol}] Miner connected: ${socket.remoteAddress}:${socket.remotePort} (id=${id})`);
+    writeDiagnosticLog('client-connected', {
+      symbol: this.config.symbol,
+      clientId: id,
+      remoteAddress: socket.remoteAddress || 'unknown',
+      remotePort: socket.remotePort || null,
+      connectedClients: this.clients.size,
+      peakClients: this._peakClients
+    });
 
     client.on('message', msg => {
       if (process.env.STRATUM_DEBUG) console.log(`[${this.config.symbol}] >> ${JSON.stringify(msg)}`);
@@ -175,6 +296,17 @@ class StratumServer extends EventEmitter {
     client.on('disconnect', () => {
       this.clients.delete(id);
       console.log(`[${this.config.symbol}] Miner disconnected (id=${id}, worker=${client.workerName || 'unknown'})`);
+      writeDiagnosticLog('client-disconnected', {
+        symbol: this.config.symbol,
+        clientId: id,
+        workerName: client.workerName || null,
+        remoteAddress: socket.remoteAddress || 'unknown',
+        connectedForSec: Math.max(0, Math.round((Date.now() - client.connectedAt) / 1000)),
+        connectedClients: this.clients.size,
+        acceptedShares: client.acceptedShares,
+        rejectedShares: client.rejectedShares,
+        staleShares: client.staleShares
+      });
     });
   }
 
@@ -262,6 +394,13 @@ class StratumServer extends EventEmitter {
     client.authorized = true;
     client.sendResult(id, true);
     console.log(`[${this.config.symbol}] Worker authorized: ${workerName}`);
+    writeDiagnosticLog('client-authorized', {
+      symbol: this.config.symbol,
+      clientId: client.id,
+      workerName,
+      remoteAddress: client.socket?.remoteAddress || 'unknown',
+      connectedClients: this.clients.size
+    });
 
     // Resend difficulty + a fresh job after auth so the miner starts work
     client.sendDifficulty(client.currentDiff);
@@ -272,11 +411,14 @@ class StratumServer extends EventEmitter {
   }
 
   async _handleSubmit(client, id, params) {
+    client.lastActivity = Date.now();
     if (!client.authorized) {
       return client.sendError(id, 24, 'Unauthorized');
     }
 
     if (!Array.isArray(params) || params.length < 5) {
+      client.rejectedShares++;
+      this._rejectedShares++;
       return client.sendError(id, 20, 'Invalid submit params');
     }
 
@@ -287,13 +429,24 @@ class StratumServer extends EventEmitter {
 
     if (!result.valid) {
       if (result.error === 'Job not found') {
-        // Stale share from a previous proxy run or job — silently accept to prevent miner error loops
-        console.log(`[${this.config.symbol}] Stale share (old job) from ${workerName} — ignored`);
-        return client.sendResult(id, true);
+        // Stale share from an old job: force miner resync with a clean job.
+        console.log(`[${this.config.symbol}] Stale share (old job) from ${workerName} — forcing resync`);
+        client.staleShares++;
+        this._staleShares++;
+        const currentJob = this.jobManager.currentJob;
+        if (currentJob && client.subscribed) {
+          client.sendNotify(this.jobManager.getNotifyParams(currentJob, true));
+        }
+        return client.sendError(id, 21, 'Stale share');
       }
+      client.rejectedShares++;
+      this._rejectedShares++;
       console.log(`[${this.config.symbol}] Invalid share from ${workerName}: ${result.error}`);
       return client.sendError(id, 20, result.error || 'Invalid share');
     }
+
+    client.acceptedShares++;
+    this._acceptedShares++;
 
     // Track share timestamp for per-miner hashrate
     const now = Date.now();
@@ -308,6 +461,13 @@ class StratumServer extends EventEmitter {
         const submitResult = await this.jobManager.rpc.submitBlock(result.blockHex);
         if (submitResult === null || submitResult === undefined) {
           console.log(`[${this.config.symbol}] *** BLOCK ACCEPTED! ***`);
+          this._blocksFound++;
+          writeDiagnosticLog('block-found', {
+            symbol: this.config.symbol,
+            workerName,
+            height: this.jobManager.currentJob?.height || null,
+            connectedClients: this.clients.size
+          });
           this.emit('blockFound', {
             workerName,
             coin: this.config.symbol,

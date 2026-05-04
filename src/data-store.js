@@ -207,23 +207,60 @@ function getMinerPerfSnapshots(poolId, miner, { mode = 'Day' } = {}) {
 
 // ─── Shares (live stream ring buffer) ─────────────────────────────────────
 const MAX_SHARES = 2000;
+const SHARE_FLUSH_MS = 2000;
+let sharesCache = read('shares', []);
+let sharesDirty = false;
+let sharesFlushTimer = null;
+
+function scheduleSharesFlush() {
+  if (sharesFlushTimer) return;
+  sharesFlushTimer = setTimeout(() => {
+    sharesFlushTimer = null;
+    if (!sharesDirty) return;
+    sharesDirty = false;
+    write('shares', sharesCache);
+  }, SHARE_FLUSH_MS);
+}
 
 function addShare(share) {
-  const arr = read('shares', []);
-  arr.push({ ...share, created: share.created || new Date().toISOString() });
-  if (arr.length > MAX_SHARES) arr.splice(0, arr.length - MAX_SHARES);
-  write('shares', arr);
+  sharesCache.push({ ...share, created: share.created || new Date().toISOString() });
+  if (sharesCache.length > MAX_SHARES) {
+    sharesCache.splice(0, sharesCache.length - MAX_SHARES);
+  }
+  sharesDirty = true;
+  scheduleSharesFlush();
+}
+
+function getRoundEffort(poolId, networkDifficulty) {
+  const diff = Number(networkDifficulty || 0);
+  if (!Number.isFinite(diff) || diff <= 0) return 0;
+
+  const blocks = read('blocks', [])
+    .filter(b => b.poolId === poolId)
+    .sort((a, b) => new Date(b.created) - new Date(a.created));
+  const lastBlockCreated = blocks[0]?.created ? new Date(blocks[0].created).getTime() : 0;
+
+  const shares = sharesCache.filter(s => {
+    if (s.poolId !== poolId) return false;
+    const t = new Date(s.created).getTime();
+    return Number.isFinite(t) && t >= lastBlockCreated;
+  });
+
+  const totalShareDifficulty = shares.reduce((sum, s) => {
+    const d = Number(s.diff || 1);
+    return sum + (Number.isFinite(d) && d > 0 ? d : 1);
+  }, 0);
+
+  return totalShareDifficulty / diff;
 }
 
 function getSharesSince(poolId, sinceMs) {
-  const arr = read('shares', []);
-  return arr.filter(s => s.poolId === poolId && new Date(s.created).getTime() > sinceMs);
+  return sharesCache.filter(s => s.poolId === poolId && new Date(s.created).getTime() > sinceMs);
 }
 
 function getSharesRate(poolId, windowSecs = 60) {
-  const arr = read('shares', []);
   const since = Date.now() - windowSecs * 1000;
-  const recent = arr.filter(s => s.poolId === poolId && new Date(s.created).getTime() > since);
+  const recent = sharesCache.filter(s => s.poolId === poolId && new Date(s.created).getTime() > since);
   return recent.length / windowSecs;
 }
 
@@ -290,7 +327,7 @@ module.exports = {
   getPendingBlocks, updateBlockRecord,
   getPayments, addPayment, totalPaid,
   addPerfSnapshot, getPerfSnapshots, getMinerPerfSnapshots,
-  addShare, getSharesSince, getSharesRate,
+  addShare, getSharesSince, getSharesRate, getRoundEffort,
   getPoolConfig, setPoolConfig,
   getMinerSettings, setMinerThreshold,
   getWorkers, getWorker, upsertWorker, deleteWorker

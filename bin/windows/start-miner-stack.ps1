@@ -158,6 +158,7 @@ $RuntimeRoot = if ($env:LOCALAPPDATA) {
 $RuntimeDataDir = Join-Path $RuntimeRoot 'data'
 $RuntimeLogDir = Join-Path $RuntimeRoot 'logs'
 $RuntimeBootstrapLog = Join-Path $RuntimeLogDir 'launcher.log'
+$DiagnosticLogPath = Join-Path $RuntimeLogDir 'multi-asic-diagnostic.log'
 $SummaryPath = Join-Path $RuntimeDataDir 'startup-summary.json'
 $InfoPath = Join-Path $RuntimeRoot 'MINER-CONNECTION-INFO.txt'
 $StatusPath = Join-Path $RuntimeRoot 'RUNTIME-STATUS.txt'
@@ -582,6 +583,9 @@ Dev Fee:
 
 Live Status File:
     $StatusPath
+
+Diagnostic Log (for multi-miner troubleshooting):
+    $DiagnosticLogPath
 ========================================================================
 "@
 
