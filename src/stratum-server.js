@@ -20,7 +20,7 @@ const VARDIFF_RETARGET_MS  = 60000; // re-evaluate every 60 seconds
 const VARDIFF_WINDOW_MS    = 120000; // look at shares from last 2 minutes
 const VARDIFF_MIN_DIFF     = 1;
 const VARDIFF_MAX_DIFF     = 2000000;
-const SCRYPT_DIFF1         = 268435456; // 2^28
+const SCRYPT_DIFF1         = 65536;     // 2^16 — matches the scrypt diff-1 reference (0x0000ffff...) used by ASIC firmware and pool standards
 const MAX_TOTAL_CLIENTS    = 128;
 const MAX_CLIENTS_PER_IP   = 24;
 const UNAUTHORIZED_IDLE_MS = 45000;
@@ -60,6 +60,8 @@ class StratumClient extends EventEmitter {
     this.acceptedShares = 0;
     this.rejectedShares = 0;
     this.staleShares = 0;
+    this.submitAttempts = 0;
+    this._consecutiveStaleShares = 0;
     this.connectedAt = Date.now();
 
     socket.setEncoding('utf8');
@@ -126,10 +128,10 @@ class StratumClient extends EventEmitter {
       // Only retarget if we're more than 20% off target
       if (actualInterval > VARDIFF_TARGET_SECS * 0.8 && actualInterval < VARDIFF_TARGET_SECS * 1.2) return;
 
-      // new_diff = current_diff * (actual_interval / target_interval)
+      // new_diff = current_diff * (target_interval / actual_interval)
       // If shares are coming too fast (actualInterval < target), raise diff
       // If shares are too slow (actualInterval > target), lower diff
-      let newDiff = Math.round(this.currentDiff * (actualInterval / VARDIFF_TARGET_SECS));
+      let newDiff = Math.round(this.currentDiff * (VARDIFF_TARGET_SECS / actualInterval));
       newDiff = Math.max(VARDIFF_MIN_DIFF, Math.min(VARDIFF_MAX_DIFF, newDiff));
 
       // Round to a clean power-of-2-friendly number to avoid constant tiny adjustments
@@ -157,7 +159,13 @@ class StratumServer extends EventEmitter {
     this._acceptedShares = 0;
     this._rejectedShares = 0;
     this._staleShares = 0;
+    this._submitAttempts = 0;
+    this._notifySent = 0;
+    this._methodCounts = {};
+    this._altEndianPasses = 0;
     this._blocksFound = 0;
+    this._rejectedByReason = {};
+    this._lastRejectReason = null;
 
     jobManager.on('newJob', (job, cleanJobs) => {
       this._broadcastJob(job, cleanJobs);
@@ -220,7 +228,13 @@ class StratumServer extends EventEmitter {
       peakClients: this._peakClients,
       acceptedShares: this._acceptedShares,
       rejectedShares: this._rejectedShares,
+      rejectedByReason: this._rejectedByReason,
+      lastRejectReason: this._lastRejectReason,
       staleShares: this._staleShares,
+      submitAttempts: this._submitAttempts,
+      notifySent: this._notifySent,
+      methodCounts: this._methodCounts,
+      altEndianPasses: this._altEndianPasses,
       blocksFound: this._blocksFound,
       rssMb
     });
@@ -333,6 +347,14 @@ class StratumServer extends EventEmitter {
         client.sendResult(id, true);
         break;
       case 'mining.configure':
+        this._methodCounts['mining.configure'] = (this._methodCounts['mining.configure'] || 0) + 1;
+        writeDiagnosticLog('client-configure', {
+          symbol: this.config.symbol,
+          clientId: client.id,
+          workerName: client.workerName,
+          remoteAddress: client.socket?.remoteAddress || 'unknown',
+          params: Array.isArray(params) ? params : null
+        });
         // BIP310 — just acknowledge, we don't support extensions
         client.sendResult(id, {});
         break;
@@ -342,12 +364,14 @@ class StratumServer extends EventEmitter {
         client.sendResult(id, true);
         break;
       default:
+        this._methodCounts[method] = (this._methodCounts[method] || 0) + 1;
         console.log(`[${this.config.symbol}] Unknown method from ${client.workerName || 'miner'}: ${method}`);
         client.sendError(id, 20, `Unknown method: ${method}`);
     }
   }
 
   _handleSubscribe(client, id, params) {
+    this._methodCounts['mining.subscribe'] = (this._methodCounts['mining.subscribe'] || 0) + 1;
     client.subscribed = true;
     const { EXTRA_NONCE_2_LEN } = require('./coinbase-builder');
 
@@ -380,10 +404,12 @@ class StratumServer extends EventEmitter {
     const job = this.jobManager.currentJob;
     if (job) {
       client.sendNotify(this.jobManager.getNotifyParams(job, true));
+      this._notifySent++;
     }
   }
 
   _handleAuthorize(client, id, params) {
+    this._methodCounts['mining.authorize'] = (this._methodCounts['mining.authorize'] || 0) + 1;
     if (!Array.isArray(params) || params.length < 1) {
       client.sendError(id, 20, 'Invalid authorize params');
       return;
@@ -393,6 +419,7 @@ class StratumServer extends EventEmitter {
     client.workerName = workerName;
     client.authorized = true;
     client.sendResult(id, true);
+
     console.log(`[${this.config.symbol}] Worker authorized: ${workerName}`);
     writeDiagnosticLog('client-authorized', {
       symbol: this.config.symbol,
@@ -407,11 +434,15 @@ class StratumServer extends EventEmitter {
     const job = this.jobManager.currentJob;
     if (job) {
       client.sendNotify(this.jobManager.getNotifyParams(job, true));
+      this._notifySent++;
     }
   }
 
   async _handleSubmit(client, id, params) {
+    this._methodCounts['mining.submit'] = (this._methodCounts['mining.submit'] || 0) + 1;
     client.lastActivity = Date.now();
+    client.submitAttempts = (client.submitAttempts || 0) + 1;
+    this._submitAttempts++;
     if (!client.authorized) {
       return client.sendError(id, 24, 'Unauthorized');
     }
@@ -422,28 +453,92 @@ class StratumServer extends EventEmitter {
       return client.sendError(id, 20, 'Invalid submit params');
     }
 
-    const [workerName, jobId, extraNonce2, ntime, nonce] = params;
+    const [workerName, jobId, extraNonce2, ntime, nonce, submittedVersion] = params;
+    if (params.length > 5) {
+      writeDiagnosticLog('submit-extra-params', {
+        symbol: this.config.symbol,
+        clientId: client.id,
+        workerName,
+        remoteAddress: client.socket?.remoteAddress || 'unknown',
+        paramsLength: params.length,
+        extraParams: params.slice(5)
+      });
+    }
     const result = this.jobManager.processShare(
-      jobId, client.extraNonce1, extraNonce2, ntime, nonce, workerName, client.currentDiff
+      jobId, client.extraNonce1, extraNonce2, ntime, nonce, workerName, client.currentDiff, submittedVersion
     );
 
     if (!result.valid) {
       if (result.error === 'Job not found') {
         // Stale share from an old job: force miner resync with a clean job.
         console.log(`[${this.config.symbol}] Stale share (old job) from ${workerName} — forcing resync`);
+        client._consecutiveStaleShares = (client._consecutiveStaleShares || 0) + 1;
         client.staleShares++;
         this._staleShares++;
+        this._lastRejectReason = 'Stale share';
         const currentJob = this.jobManager.currentJob;
+        if ((this._staleShares % 5) === 1) {
+          const knownJobIds = [...this.jobManager.jobs.keys()].slice(-8);
+          writeDiagnosticLog('stale-share-sample', {
+            symbol: this.config.symbol,
+            workerName,
+            clientId: client.id,
+            submittedJobId: jobId,
+            currentJobId: currentJob?.id || null,
+            knownJobIds,
+            staleShares: this._staleShares,
+            submitAttempts: this._submitAttempts
+          });
+        }
         if (currentJob && client.subscribed) {
           client.sendNotify(this.jobManager.getNotifyParams(currentJob, true));
         }
-        return client.sendError(id, 21, 'Stale share');
+        client.sendError(id, 21, 'Stale share');
+
+        // Some ASIC firmwares can get stuck replaying an old job forever.
+        // Force a reconnect after repeated stale submissions to reset job state.
+        if (client._consecutiveStaleShares >= 12) {
+          console.log(`[${this.config.symbol}] Too many consecutive stale shares from ${workerName}; forcing reconnect`);
+          client.destroy();
+        }
+        return;
       }
+      client._consecutiveStaleShares = 0;
       client.rejectedShares++;
       this._rejectedShares++;
+      if (result?.diag?.meetsShareDifficultyNoReverse) {
+        this._altEndianPasses++;
+      }
+      const rejectReason = result.error || 'Invalid share';
+      this._rejectedByReason[rejectReason] = (this._rejectedByReason[rejectReason] || 0) + 1;
+      this._lastRejectReason = rejectReason;
+      if (rejectReason === 'Low difficulty share' && (this._rejectedShares % 10 === 1)) {
+        writeDiagnosticLog('low-diff-sample', {
+          symbol: this.config.symbol,
+          workerName,
+          currentDiff: client.currentDiff || 1,
+          jobId,
+          extraNonce1: client.extraNonce1,
+          extraNonce2,
+          ntime,
+          nonce,
+          submittedVersion: submittedVersion || null,
+          headerHex: result?.diag?.headerHex || null,
+          runDeepDiagnostics: !!result?.diag?.runDeepDiagnostics,
+          meetsShareDifficultyNoReverse: !!result?.diag?.meetsShareDifficultyNoReverse,
+          variantPass: result?.diag?.variantPass || null,
+          variantHashPrefix: result?.diag?.variantHashHex ? String(result.diag.variantHashHex).slice(0, 16) : null,
+          closestVariant: result?.diag?.closestVariant || null,
+          closestVariantHashPrefix: result?.diag?.closestVariantHashHex
+            ? String(result.diag.closestVariantHashHex).slice(0, 16)
+            : null
+        });
+      }
       console.log(`[${this.config.symbol}] Invalid share from ${workerName}: ${result.error}`);
       return client.sendError(id, 20, result.error || 'Invalid share');
     }
+
+    client._consecutiveStaleShares = 0;
 
     client.acceptedShares++;
     this._acceptedShares++;
@@ -492,6 +587,7 @@ class StratumServer extends EventEmitter {
     for (const [, client] of this.clients) {
       if (client.subscribed) {
         client.sendNotify(params);
+        this._notifySent++;
         count++;
       }
     }

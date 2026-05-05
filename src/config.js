@@ -26,8 +26,10 @@ const coins = {
     // Stratum port miners connect to (3333 is free)
     stratumPort: 3333,
 
-    // Starting share difficulty sent to miners
-    difficulty: 1,
+    // Starting share difficulty sent to miners.
+    // Set high enough that each share represents meaningful work.
+    // For a 2.2 GH/s scrypt ASIC, 32768 → ~1 share/sec; vardiff will raise to ~500k for 1/15sec target.
+    difficulty: 32768,
 
     // Your LC2 mining reward address (auto-fetched from wallet if blank)
     miningAddress: 'lc21qn7zrvlfm43ktkpxnpsxm5lfg3lwdy9k4zpjsxw',
@@ -72,9 +74,7 @@ const coins = {
     // Stratum port (kept running but miners don't connect here directly)
     stratumPort: 3334,
 
-    difficulty: 1,
-
-    // Mining reward address (auto-generated from wallet)
+    difficulty: 32768,
     miningAddress: 'D8ENbJtef4iMNfCsQ1Xavpm6ZCcTirJgp3',
 
     // DOGE2 daemon RPC: port 22655, P2P 22656 (from binary help)
