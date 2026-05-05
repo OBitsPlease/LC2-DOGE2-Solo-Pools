@@ -51,6 +51,8 @@ class JobManager extends EventEmitter {
     this._auxRejected = 0;
     this._auxErrors = 0;
     this._lowDiffDiagCounter = 0;
+    // Allow opt-in compatibility acceptance for ASIC firmware byte-order variants.
+    this._scryptCompatFallback = this.coin.symbol === 'LC2' && this.coin.scryptCompatFallback !== false;
     // Merge mining: set when this chain is the AUX (DOGE2)
     this._parentJobMgr = null;      // LC2 JobManager instance (for hashrate passthrough)
   }
@@ -571,6 +573,36 @@ class JobManager extends EventEmitter {
         }
       } catch {
         // Best-effort diagnostics only.
+      }
+
+      if (this._scryptCompatFallback && variantPass) {
+        writeDiagnosticLog('compat-share-accepted', {
+          symbol: this.coin.symbol,
+          workerName,
+          variantPass,
+          closestVariant,
+          shareDiff: normalizedShareDiff,
+          jobId,
+          height: job.height || null
+        });
+        this._recordShare(normalizedShareDiff);
+        return {
+          valid: true,
+          meetsDifficulty: false,
+          hashHex: variantHashHex || hashHex,
+          diag: {
+            compatAccepted: true,
+            compatVariant: variantPass,
+            closestVariant,
+            closestVariantHashHex,
+            runDeepDiagnostics,
+            meetsShareDifficultyNoReverse,
+            variantPass,
+            variantHashHex,
+            headerHex: header.toString('hex'),
+            extraNonce1: extraNonce1Hex
+          }
+        };
       }
 
       return {

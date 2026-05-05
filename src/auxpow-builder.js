@@ -36,7 +36,7 @@ function buildAuxHeader({ version, prevhash, merkleRootHex, curtime, bits }) {
   return Buffer.concat([
     writeInt32LE(version | 0x100),               // AuxPoW version bit set
     Buffer.from(reverseHex(prevhash), 'hex'),     // prevhash in wire order (LE)
-    Buffer.from(merkleRootHex, 'hex').reverse(),  // merkle root in wire order (LE)
+    Buffer.from(merkleRootHex, 'hex'),            // merkle root already in internal/wire order
     writeUInt32LE(curtime),
     Buffer.from(bits, 'hex').reverse(),           // bits in wire order (LE)
     writeUInt32LE(0)                              // nonce = 0 for AuxPoW

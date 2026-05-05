@@ -20,6 +20,34 @@ function getStopAllRequestPath() {
   return path.join(getRuntimeRoot(), 'data', 'stop-all-request.json');
 }
 
+function resolveAppVersion() {
+  const fromEnv = (process.env.APP_VERSION || process.env.npm_package_version || '').trim();
+  if (fromEnv) return fromEnv;
+
+  try {
+    const summaryPath = path.join(ds.getDataDir(), 'startup-summary.json');
+    const summary = JSON.parse(fs.readFileSync(summaryPath, 'utf8'));
+    const fromSummary = (summary?.appVersion || '').trim();
+    if (fromSummary) return fromSummary;
+  } catch (_) {
+    // Ignore missing/corrupt summary and continue to other sources.
+  }
+
+  const fromConfig = (config.appVersion || '').trim();
+  if (fromConfig) return fromConfig;
+
+  try {
+    const pkgPath = path.join(__dirname, '..', 'package.json');
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+    const fromPkg = (pkg?.version || '').trim();
+    if (fromPkg) return fromPkg;
+  } catch (_) {
+    // Keep dashboard available even if package metadata is missing.
+  }
+
+  return 'unknown';
+}
+
 // ─── Pool metadata (what /dashboard/pools-meta returns) ────────────────────
 function buildPoolsMeta() {
   return Object.entries(config.coins)
@@ -543,6 +571,10 @@ route('POST', '/api/updates/:coinId/apply', async (req, res, rp) => {
 
 route('GET', '/api/updates/progress', (req, res) => {
   jsonOk(res, updateChecker.getUpdateProgress());
+});
+
+route('GET', '/api/app-version', (req, res) => {
+  jsonOk(res, { version: resolveAppVersion() });
 });
 
 // ─── Static files ──────────────────────────────────────────────────────────

@@ -549,6 +549,15 @@ class StratumServer extends EventEmitter {
     client._shareTimes = client._shareTimes.filter(t => now - t < 60000);
 
     console.log(`[${this.config.symbol}] Share from ${workerName} — hash: ${result.hashHex ? result.hashHex.slice(0,12) : '?'}...`);
+    if (result?.diag?.compatAccepted) {
+      writeDiagnosticLog('compat-share-accepted-runtime', {
+        symbol: this.config.symbol,
+        workerName,
+        variant: result.diag.compatVariant || null,
+        currentDiff: client.currentDiff || 1,
+        jobId
+      });
+    }
 
     if (result.meetsDifficulty) {
       console.log(`[${this.config.symbol}] *** BLOCK FOUND by ${workerName}! Submitting...`);

@@ -24,6 +24,23 @@ const path            = require('path');
 const fs              = require('fs');
 const { execFile }    = require('child_process');
 
+function resolveAppVersion() {
+  const fromEnv = (process.env.APP_VERSION || process.env.npm_package_version || '').trim();
+  if (fromEnv) return fromEnv;
+
+  try {
+    const pkgPath = path.join(__dirname, '..', 'package.json');
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+    const fromPkg = (pkg?.version || '').trim();
+    if (fromPkg) return fromPkg;
+  } catch (_) {
+    // In packaged mode package.json may not exist beside bundled sources.
+  }
+
+  const fromConfig = (config.appVersion || '').trim();
+  return fromConfig || 'unknown';
+}
+
 const ORPHAN_LOG_DIR = path.join(path.dirname(ds.getDataDir()), 'logs');
 const ORPHAN_EVENT_LOG = path.join(ORPHAN_LOG_DIR, 'orphan-events.log');
 
@@ -479,6 +496,7 @@ async function main() {
 
   writeStartupSummary({
     generatedAt: new Date().toISOString(),
+    appVersion: resolveAppVersion(),
     dashboard: {
       requestedPort: requestedDashPort,
       port: dashPort,

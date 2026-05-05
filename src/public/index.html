@@ -36,6 +36,19 @@
   .logo-icon { width: 36px; height: 36px; background: var(--accent); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 900; color: #000; font-size: 16px; overflow: hidden; }
   .logo-icon img { width: 36px; height: 36px; border-radius: 50%; display: block; }
   .status-bar { display: flex; gap: 16px; align-items: center; font-size: 12px; }
+  .app-version-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 3px 8px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--surface2);
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: .04em;
+    white-space: nowrap;
+  }
   .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); display: inline-block; margin-right: 4px; animation: pulse 2s infinite; }
   .status-dot.red { background: var(--red); animation: none; }
   @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
@@ -158,6 +171,7 @@
   </div>
   <div style="display:flex;gap:6px;align-items:center" id="pool-tabs"></div>
   <div class="status-bar">
+    <span id="app-version" class="app-version-badge">APP v…</span>
     <span id="pool-status"><span class="status-dot red"></span>Connecting…</span>
     <span id="node-status"><span class="status-dot red"></span>Node…</span>
     <span class="refresh-info" id="last-refresh">–</span>
@@ -1532,6 +1546,18 @@ async function refreshAll() {
     ]);
 }
 
+async function loadAppVersion() {
+  try {
+    const data = await get('/api/app-version');
+    const version = (data && typeof data.version === 'string' && data.version.trim())
+      ? data.version.trim()
+      : 'unknown';
+    setEl('app-version', `APP v${version}`);
+  } catch (_) {
+    setEl('app-version', 'APP vunknown');
+  }
+}
+
 // Init
 fetch('/dashboard/pools-meta')
     .then(r => r.json())
@@ -1546,6 +1572,7 @@ fetch('/dashboard/pools-meta')
 
 // Miner chart on select change
 document.addEventListener('DOMContentLoaded', () => {
+  loadAppVersion();
     document.getElementById('miner-select')?.addEventListener('change', loadMinerChart);
     document.getElementById('worker-select')?.addEventListener('change', loadMinerChart);
 });

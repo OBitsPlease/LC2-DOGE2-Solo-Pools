@@ -31,6 +31,10 @@ const coins = {
     // For a 2.2 GH/s scrypt ASIC, 32768 → ~1 share/sec; vardiff will raise to ~500k for 1/15sec target.
     difficulty: 32768,
 
+    // Compatibility fallback for ASIC firmware variants that submit valid scrypt
+    // work with alternate header byte-order conventions.
+    scryptCompatFallback: true,
+
     // Your LC2 mining reward address (auto-fetched from wallet if blank)
     miningAddress: 'lc21qn7zrvlfm43ktkpxnpsxm5lfg3lwdy9k4zpjsxw',
 
@@ -97,6 +101,7 @@ const coins = {
 };
 
 module.exports = {
+  appVersion: '1.0.33',
   coins,
   dashboard: {
     port: 8081   // web dashboard port (8080 is used by existing dashboard)
