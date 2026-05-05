@@ -592,6 +592,16 @@ class JobManager extends EventEmitter {
 
     // Check DOGE2 AuxPoW merge mining (same Scrypt hash, checked against DOGE2 target)
     if (job.auxData) {
+      if (hashBigInt <= job.auxData.target && hashBigIntNoReverse > job.auxData.target) {
+        writeDiagnosticLog('aux-candidate-endian-warning', {
+          aux: this._auxJobMgr?.coin?.symbol || 'DOGE2',
+          height: job.auxData?.template?.height || null,
+          hashLE: hashBigInt.toString(16).padStart(64, '0'),
+          hashBE: hashBigIntNoReverse.toString(16).padStart(64, '0'),
+          target: job.auxData.target.toString(16).padStart(64, '0'),
+          bits: job.auxData?.template?.bits || null
+        });
+      }
       if (hashBigInt <= job.auxData.target) {
         this._auxCandidates++;
         writeDiagnosticLog('aux-candidate-hit', {
@@ -663,8 +673,25 @@ class JobManager extends EventEmitter {
     // Verify the LC2 hash still meets the fresh DOGE2 target (difficulty may have changed)
     const scrypt = require('scryptsy');
     const lc2Hash = scrypt(lc2HeaderBytes, lc2HeaderBytes, 1024, 1, 1, 32);
-    const lc2HashBigInt = BigInt('0x' + Buffer.from(lc2Hash).reverse().toString('hex'));
-    if (lc2HashBigInt > auxData.target) {
+    const lc2HashHex = lc2Hash.toString('hex');
+    const lc2HashBigIntLE = BigInt('0x' + Buffer.from(lc2HashHex, 'hex').reverse().toString('hex'));
+    const lc2HashBigIntBE = BigInt('0x' + lc2HashHex);
+    const meetsAuxTargetLE = lc2HashBigIntLE <= auxData.target;
+    const meetsAuxTargetBE = lc2HashBigIntBE <= auxData.target;
+
+    writeDiagnosticLog('aux-submit-hash-check', {
+      aux: this._auxJobMgr?.coin?.symbol || 'DOGE2',
+      height: auxHeight,
+      bits: auxData?.template?.bits || null,
+      target: auxData.target.toString(16).padStart(64, '0'),
+      lc2HashRaw: lc2HashHex,
+      lc2HashLE: lc2HashBigIntLE.toString(16).padStart(64, '0'),
+      lc2HashBE: lc2HashBigIntBE.toString(16).padStart(64, '0'),
+      meetsAuxTargetLE,
+      meetsAuxTargetBE
+    });
+
+    if (!meetsAuxTargetLE) {
       console.warn(`[DOGE2] LC2 hash no longer meets refreshed DOGE2 target — skipping submit`);
       return;
     }
@@ -717,6 +744,13 @@ class JobManager extends EventEmitter {
           rejected: this._auxRejected,
           submits: this._auxSubmits,
           candidates: this._auxCandidates,
+          bits: auxData?.template?.bits || null,
+          target: auxData.target.toString(16).padStart(64, '0'),
+          lc2HashRaw: lc2HashHex,
+          lc2HashLE: lc2HashBigIntLE.toString(16).padStart(64, '0'),
+          lc2HashBE: lc2HashBigIntBE.toString(16).padStart(64, '0'),
+          meetsAuxTargetLE,
+          meetsAuxTargetBE,
           result: String(result)
         });
         console.error(`[DOGE2] Block rejected (height ${auxHeight}): ${result}`);
