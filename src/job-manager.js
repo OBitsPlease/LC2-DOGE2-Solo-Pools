@@ -639,10 +639,35 @@ class JobManager extends EventEmitter {
 
   async _submitAuxBlock(lc2Job, extraNonce1Hex, extraNonce2Hex, lc2HeaderBytes) {
     const { buildFullCoinbaseTx } = require('./coinbase-builder');
-    const auxData = lc2Job.auxData;
-    const auxHeight = auxData.template.height;
+    const cachedAuxHeight = lc2Job.auxData.template.height;
 
-    console.log(`[DOGE2] 🎯 AuxPoW difficulty met! Building block for height ${auxHeight}...`);
+    console.log(`[DOGE2] 🎯 AuxPoW difficulty met! Building block for height ${cachedAuxHeight}...`);
+
+    // Fetch a fresh DOGE2 template at submit time to avoid stale-block rejection.
+    // If DOGE2 has already moved past this height, the submission would be rejected
+    // with "high-hash" or "stale" — skip it rather than waste the RPC call.
+    let auxData;
+    try {
+      auxData = await this._auxJobMgr.getAuxData();
+    } catch (err) {
+      console.error(`[DOGE2] Could not refresh aux data before submit: ${err.message} — falling back to cached template`);
+      auxData = lc2Job.auxData;
+    }
+
+    const auxHeight = auxData.template.height;
+    if (auxHeight !== cachedAuxHeight) {
+      console.warn(`[DOGE2] Stale aux candidate: job was for height ${cachedAuxHeight} but DOGE2 is now at height ${auxHeight} — skipping submit`);
+      return;
+    }
+
+    // Verify the LC2 hash still meets the fresh DOGE2 target (difficulty may have changed)
+    const scrypt = require('scryptsy');
+    const lc2Hash = scrypt(lc2HeaderBytes, lc2HeaderBytes, 1024, 1, 1, 32);
+    const lc2HashBigInt = BigInt('0x' + Buffer.from(lc2Hash).reverse().toString('hex'));
+    if (lc2HashBigInt > auxData.target) {
+      console.warn(`[DOGE2] LC2 hash no longer meets refreshed DOGE2 target — skipping submit`);
+      return;
+    }
 
     const parentCoinbaseTxHex = buildFullCoinbaseTx(
       lc2Job.coinb1, extraNonce1Hex, extraNonce2Hex, lc2Job.coinb2
