@@ -240,10 +240,14 @@ function getRoundEffort(poolId, networkDifficulty) {
     .sort((a, b) => new Date(b.created) - new Date(a.created));
   const lastBlockCreated = blocks[0]?.created ? new Date(blocks[0].created).getTime() : 0;
 
+  // If no block has ever been found, only count shares from the last 24 hours to avoid
+  // accumulating all shares since epoch 0 and showing a nonsensical effort percentage.
+  const roundStart = lastBlockCreated > 0 ? lastBlockCreated : Date.now() - 24 * 60 * 60 * 1000;
+
   const shares = sharesCache.filter(s => {
     if (s.poolId !== poolId) return false;
     const t = new Date(s.created).getTime();
-    return Number.isFinite(t) && t >= lastBlockCreated;
+    return Number.isFinite(t) && t >= roundStart;
   });
 
   const totalShareDifficulty = shares.reduce((sum, s) => {
