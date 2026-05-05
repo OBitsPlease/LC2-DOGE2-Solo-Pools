@@ -556,7 +556,11 @@ Runtime:   $RuntimeRoot
 
 Current Stratum Endpoints:
   LC2   -> stratum+tcp://127.0.0.1:$lc2Port
-  DOGE2 -> stratum+tcp://127.0.0.1:$doge2Port
+
+Merged Mining (AuxPoW):
+    DOGE2 is merge-mined automatically from LC2 shares.
+    ASICs should use one pool endpoint only: LC2 above.
+    Do not configure a second DOGE2 port in ASIC settings.
 
 Block Rewards:
     LC2   -> 50 LC2 per block
@@ -598,7 +602,7 @@ if ($OpenDashboard) {
 
 Write-Host "Stack launch complete."
 Write-Host "LC2:   stratum+tcp://127.0.0.1:$lc2Port"
-Write-Host "DOGE2: stratum+tcp://127.0.0.1:$doge2Port"
+Write-Host "DOGE2: merge-mined automatically via LC2 (no second ASIC pool/port needed)"
 Write-Host "Dashboard: $dashUrl"
 Write-Host "Info file: $InfoPath"
 Write-Bootstrap 'Launcher completed successfully.'

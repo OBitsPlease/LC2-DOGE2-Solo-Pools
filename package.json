@@ -1,6 +1,6 @@
 {
   "name": "lc2-doge2-stratum-proxy-solo-miner",
-  "version": "1.0.28",
+  "version": "1.0.29",
   "description": "Solo stratum proxy for LC2 and DOGE2 merge-mined coins. 1% dev fee (locked).",
   "main": "src/index.js",
   "bin": {
@@ -9,6 +9,7 @@
   "scripts": {
     "start": "node src/index.js",
     "preflight": "node src/preflight.js",
+    "selftest": "node bin/dev-self-test.js",
     "build:exe:win": "npx pkg src/index.js --target node18-win-x64 --output dist/lc2-solo-proxy-windows.exe",
     "build:installer:win": "powershell -ExecutionPolicy Bypass -File installer/windows/build-installer.ps1",
     "genaddress": "node bin/gen-address.js",

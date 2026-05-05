@@ -34,8 +34,10 @@ If default ports are already in use, the app automatically switches to the next 
 
 1. Start the app using the Desktop icon or Start Menu shortcut
 2. Open `MINER-CONNECTION-INFO.txt`
-3. Point your miner to the LC2 or DOGE2 endpoint shown in that file
+3. Point your miner to the LC2 endpoint shown in that file
 4. Open the dashboard URL shown in that file to monitor status
+
+For merged mining in this app, LC2 is the single ASIC pool endpoint. DOGE2 is AuxPoW merge-mined automatically from those LC2 shares, so ASICs do not need a second pool/port setting.
 
 The most important user-facing files are:
 
@@ -61,3 +63,22 @@ If something is not working:
 2. Open the dashboard shown there
 3. Review the files in `data\`
 4. Review `%LOCALAPPDATA%\LC2 DOGE2 Solo Miner\logs\watchdog.log`, `proxy-out.log`, and `proxy-err.log`
+
+---
+
+## Developer Validation
+
+Use this command for a quick developer validation pass against a live local stack.
+
+Run:
+
+`npm run selftest`
+
+What it verifies:
+
+1. The dashboard API is alive
+2. The LC2 stratum port accepts subscribe and authorize
+3. The server sends a live mining job
+4. An intentionally bad share is rejected correctly
+
+That gives you a fast sanity check that the stack is up and the mining path is behaving sensibly.

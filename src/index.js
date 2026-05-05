@@ -102,35 +102,45 @@ function getLanIpv4Address() {
 function buildMinerConnectionInfo({ dashboardPort, startupCoins }) {
   const lanIp = getLanIpv4Address();
   const startedCoins = startupCoins.filter(coin => coin.started);
+  const lc2Coin = startedCoins.find(coin => coin.key === 'lc2');
+  const primaryCoin = lc2Coin || startedCoins[0] || null;
+  const hasAuxDoge2 = startedCoins.some(coin => coin.key === 'doge2' && config.doge2.mergedParent === 'lc2');
   const lines = [];
 
   lines.push('============================================================');
   lines.push('  LC2/DOGE2 SOLO MINER - LIVE CONNECTION INFO');
   lines.push('============================================================');
   lines.push('');
-  lines.push('Type these exact addresses into miners on the same network:');
+  lines.push('Type this exact address into miners on the same network:');
   lines.push('');
 
-  for (const coin of startedCoins) {
-    const lanEndpoint = `stratum+tcp://${lanIp}:${coin.stratumPort}`;
-    lines.push(`${coin.symbol}: ${lanEndpoint}`);
-    if (Number.isFinite(coin.blockReward)) {
-      const reward = Number.isInteger(coin.blockReward)
-        ? coin.blockReward.toLocaleString()
-        : coin.blockReward.toFixed(4);
-      lines.push(`  Block reward: ${reward} ${coin.symbol}`);
-    }
-    if (coin.blockRewardNote) {
-      lines.push(`  ${coin.blockRewardNote}`);
-    }
-    if (coin.key === 'doge2' && config.doge2.mergedParent === 'lc2') {
-      lines.push('  Note: DOGE2 is merge-mined through LC2. Most miners should use the LC2 address above.');
-    }
+  if (primaryCoin) {
+    lines.push(`${primaryCoin.symbol}: ${lanIp}:${primaryCoin.stratumPort}`);
     lines.push('');
   }
 
-  lines.push('If your miner does not accept addresses with stratum+tcp://, try the same address without it.');
-  lines.push(`Example: ${lanIp}:${startedCoins[0] ? startedCoins[0].stratumPort : 3333}`);
+  if (hasAuxDoge2 && lc2Coin) {
+    lines.push('Merged mining note:');
+    lines.push('- DOGE2 is AuxPoW merge-mined automatically from LC2 shares.');
+    lines.push('- ASICs should use one pool endpoint only (LC2).');
+    lines.push('- Do not configure a second DOGE2 port in ASIC settings.');
+    lines.push('');
+  }
+
+  lines.push('Current block rewards:');
+  for (const coin of startedCoins) {
+    if (!Number.isFinite(coin.blockReward)) continue;
+    const reward = Number.isInteger(coin.blockReward)
+      ? coin.blockReward.toLocaleString()
+      : coin.blockReward.toFixed(4);
+    lines.push(`- ${coin.symbol}: ${reward} ${coin.symbol}`);
+    if (coin.blockRewardNote) {
+      lines.push(`  ${coin.blockRewardNote}`);
+    }
+  }
+  lines.push('');
+
+  lines.push(`If your miner requires the stratum+tcp:// prefix, use: stratum+tcp://${lanIp}:${primaryCoin ? primaryCoin.stratumPort : 3333}`);
   lines.push('');
 
   lines.push(`Dashboard: http://${lanIp}:${dashboardPort}/`);

@@ -188,6 +188,33 @@ function merkleRoot(coinbaseTxid, merkleBranches) {
   return root.toString('hex');
 }
 
+// Build coinbase merkle proof path from all non-coinbase transaction hashes.
+// Input hashes are expected in display order (RPC/stratum style).
+// The tree is computed in internal byte order and returned in internal byte order.
+function buildCoinbaseMerkleBranches(nonCoinbaseTxHashes) {
+  // Convert display-order txids to internal order for merkle hashing.
+  let right = nonCoinbaseTxHashes.map(h => Buffer.from(reverseHex(h), 'hex'));
+  const branchesInternal = [];
+
+  while (right.length > 0) {
+    // Sibling of the coinbase path node at this level.
+    branchesInternal.push(right[0]);
+
+    // Remaining nodes to the right of the path are folded for the next level.
+    const rest = right.slice(1);
+    const nextRight = [];
+    for (let i = 0; i < rest.length; i += 2) {
+      const left = rest[i];
+      const r = i + 1 < rest.length ? rest[i + 1] : rest[i];
+      nextRight.push(dsha256(Buffer.concat([left, r])));
+    }
+    right = nextRight;
+  }
+
+  // cgminer/ccminer consume merkle branch bytes from notify as-is.
+  return branchesInternal.map(b => b.toString('hex'));
+}
+
 // Target from nBits
 function bitsToTarget(bits) {
   const exponent = parseInt(bits, 16) >> 24;
@@ -208,6 +235,6 @@ module.exports = {
   dsha256, sha256, hash160,
   addressToScript, varInt,
   writeInt32LE, writeUInt32LE, writeInt64LE,
-  encodeHeight, reverseHex, merkleRoot,
+  encodeHeight, reverseHex, merkleRoot, buildCoinbaseMerkleBranches,
   bitsToTarget, hashMeetsTarget
 };
