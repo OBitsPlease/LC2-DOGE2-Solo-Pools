@@ -2,9 +2,25 @@
 
 const EventEmitter = require('events');
 const { buildCoinbaseSplit, coinbaseTxid, EXTRA_NONCE_1_LEN } = require('./coinbase-builder');
-const { dsha256, reverseHex, merkleRoot, bitsToTarget } = require('./utils');
+const { dsha256, reverseHex, merkleRoot, buildCoinbaseMerkleBranches, bitsToTarget } = require('./utils');
 const { buildAuxHeader, computeAuxHash, buildMergedMiningCommitment, buildAuxPowBlock } = require('./auxpow-builder');
 const { writeDiagnosticLog } = require('./diagnostic-logger');
+
+// cgminer applies flip32 (per-4-byte-word byte-reversal) to the prevhash received in
+// mining.notify before writing it into the block header. We must send the prevhash
+// pre-flipped so that flip32(flip32(prevHashReversed)) = prevHashReversed lands in the header.
+function flip32Hex(hexStr) {
+  let out = '';
+  for (let i = 0; i < 64; i += 8)
+    out += hexStr.slice(i, i + 8).match(/.{2}/g).reverse().join('');
+  return out;
+}
+
+// Scrypt diff-1 reference target used by Litecoin ASICs and all major scrypt pool software.
+// This is 65,536x easier than Bitcoin's diff-1 ('1d00ffff') — using the wrong one causes
+// 100% share rejection because virtually no scrypt shares meet the Bitcoin difficulty reference.
+// Value: 0x0000ffff0000...0000 (64 hex chars, 32 bytes)
+const SHARE_DIFF1_TARGET = bitsToTarget('1f00ffff');
 
 /**
  * JobManager polls getblocktemplate from the coin daemon,
@@ -34,6 +50,7 @@ class JobManager extends EventEmitter {
     this._auxAccepted = 0;
     this._auxRejected = 0;
     this._auxErrors = 0;
+    this._lowDiffDiagCounter = 0;
     // Merge mining: set when this chain is the AUX (DOGE2)
     this._parentJobMgr = null;      // LC2 JobManager instance (for hashrate passthrough)
   }
@@ -79,12 +96,14 @@ class JobManager extends EventEmitter {
     });
     const ZERO_EN1 = '00000000';
     const ZERO_EN2 = '00000000';
-    const cbTxidHex = calcCbTxid(coinb1, ZERO_EN1, ZERO_EN2, coinb2);
+    const cbTxidNatural = calcCbTxid(coinb1, ZERO_EN1, ZERO_EN2, coinb2);
     const fullCoinbaseTxHex = buildFullCoinbaseTx(coinb1, ZERO_EN1, ZERO_EN2, coinb2);
 
-    // DOGE2 merkle root from coinbase txid + template tx hashes
-    const txHashes = template.transactions.map(tx => tx.txid || tx.hash);
-    const mRoot = merkleRoot(cbTxidHex, txHashes);
+    // DOGE2 merkle root from the actual coinbase proof path, not the full tx list.
+    // buildCoinbaseMerkleBranches returns internal-order branches.
+    const txHashesDisplay = template.transactions.map(tx => tx.txid || tx.hash);
+    const txMerkleBranchesInternal = buildCoinbaseMerkleBranches(txHashesDisplay);
+    const mRoot = merkleRoot(cbTxidNatural, txMerkleBranchesInternal);
 
     // Build the DOGE2 block header (80 bytes, AuxPoW version bit set, nonce=0)
     const headerBytes = buildAuxHeader({
@@ -222,8 +241,9 @@ class JobManager extends EventEmitter {
       auxCommitment
     });
 
-    // Compute merkle branches (all tx hashes except coinbase)
-    const merkleBranches = template.transactions.map(tx => tx.txid || tx.hash);
+    // Compute the real coinbase merkle proof path (not raw tx hash list).
+    const txHashesDisplay = template.transactions.map(tx => tx.txid || tx.hash);
+    const merkleBranches = buildCoinbaseMerkleBranches(txHashesDisplay);
 
     // prevhash bytes are reversed for stratum
     const prevHashReversed = reverseHex(template.previousblockhash);
@@ -268,7 +288,7 @@ class JobManager extends EventEmitter {
   getNotifyParams(job, cleanJobs = false) {
     return [
       job.id,
-      job.prevHashReversed,
+      flip32Hex(job.prevHashReversed),
       job.coinb1,
       job.coinb2,
       job.merkleBranches,
@@ -283,9 +303,9 @@ class JobManager extends EventEmitter {
     // If this chain is merge-mined by a parent (e.g. DOGE2 via LC2), use the parent's hashrate
     if (this._parentJobMgr) return this._parentJobMgr.getPoolHashrate();
 
-    // Scrypt ASIC diff1 constant: calibrated for dashboard parity with common ASIC firmware.
+    // Scrypt diff-1 constant: 65536 (2^16) matches the 0x0000ffff... share reference used by ASIC firmware.
     // Formula: hashrate = sum(share_difficulties) * SCRYPT_DIFF1 / window_seconds
-    const SCRYPT_DIFF1 = 268435456; // 2^28
+    const SCRYPT_DIFF1 = 65536; // 2^16
     const now = Date.now();
     this._shareWindow = this._shareWindow.filter(s => now - s.ts < 30000);
     const totalDiff = this._shareWindow.reduce((sum, s) => sum + s.diff, 0);
@@ -302,7 +322,7 @@ class JobManager extends EventEmitter {
    *
    * Returns: { valid: bool, meetsDifficulty: bool, blockHex?: string, error?: string }
    */
-  processShare(jobId, extraNonce1Hex, extraNonce2Hex, ntime, nonce, workerName, sharesDiff = 1) {
+  processShare(jobId, extraNonce1Hex, extraNonce2Hex, ntime, nonce, workerName, sharesDiff = 1, submittedVersion = null) {
     const job = this.jobs.get(jobId);
     if (!job) {
       const knownIds = [...this.jobs.keys()].join(', ');
@@ -310,17 +330,22 @@ class JobManager extends EventEmitter {
       return { valid: false, error: 'Job not found' };
     }
 
-    // Reconstruct the full coinbase txid
-    const cbTxid = coinbaseTxid(job.coinb1, extraNonce1Hex, extraNonce2Hex, job.coinb2);
+    // Reconstruct the full coinbase txid (natural = internal byte order, no reversal)
+    const cbTxidNatural = coinbaseTxid(job.coinb1, extraNonce1Hex, extraNonce2Hex, job.coinb2);
 
-    // Merkle root
-    const mRoot = merkleRoot(cbTxid, job.merkleBranches);
+    // Merkle root: natural cbTxid + internal-order branches from job notify data.
+    const mRoot = merkleRoot(cbTxidNatural, job.merkleBranches);
 
-    // Build 80-byte block header
+    // Miner may send a rolled version (6th mining.submit param). Use it when valid.
+    const headerVersionHex = (typeof submittedVersion === 'string' && /^[0-9a-fA-F]{8}$/.test(submittedVersion))
+      ? submittedVersion.toLowerCase()
+      : job.version;
+
+    // Build 80-byte block header (all fields in wire/little-endian byte order)
     const header = Buffer.concat([
-      Buffer.from(job.version, 'hex').reverse(),   // version LE
+      Buffer.from(headerVersionHex, 'hex').reverse(),   // version LE
       Buffer.from(job.prevHashReversed, 'hex'),     // prevhash (already in wire order)
-      Buffer.from(mRoot, 'hex').reverse(),          // merkle root LE
+      Buffer.from(mRoot, 'hex'),                    // merkle root (internal byte order)
       Buffer.from(ntime, 'hex').reverse(),          // ntime LE
       Buffer.from(job.nbits, 'hex').reverse(),      // nbits LE
       Buffer.from(nonce, 'hex').reverse()           // nonce LE
@@ -336,9 +361,234 @@ class JobManager extends EventEmitter {
       return { valid: false, error: `Scrypt error: ${e.message}` };
     }
 
-    // Check if hash meets network difficulty
+    const normalizedShareDiff = Math.max(1, Math.trunc(Number(sharesDiff) || 1));
+    const shareTarget = SHARE_DIFF1_TARGET / BigInt(normalizedShareDiff);
+
+    // Check if hash meets client share difficulty first.
     const hashBigInt = BigInt('0x' + Buffer.from(hashHex, 'hex').reverse().toString('hex'));
+    const hashBigIntNoReverse = BigInt('0x' + hashHex);
+    const meetsShareDifficulty = hashBigInt <= shareTarget;
+    const meetsShareDifficultyNoReverse = hashBigIntNoReverse <= shareTarget;
     const meetsDifficulty = hashBigInt <= job.target;
+
+    if (!meetsShareDifficulty) {
+      this._lowDiffDiagCounter++;
+      const runDeepDiagnostics = (this._lowDiffDiagCounter % 25) === 1;
+      let variantPass = null;
+      let variantHashHex = null;
+      let closestVariant = null;
+      let closestVariantHashHex = null;
+      try {
+        const scrypt = require('scryptsy');
+
+        const variantResults = [];
+        const evaluateVariant = (name, headerBuf) => {
+          const hash = scrypt(headerBuf, headerBuf, 1024, 1, 1, 32).toString('hex');
+          const hashInt = BigInt('0x' + Buffer.from(hash, 'hex').reverse().toString('hex'));
+          variantResults.push({ name, hash, hashInt });
+          if (!variantPass && hashInt <= shareTarget) {
+            variantPass = name;
+            variantHashHex = hash;
+          }
+        };
+
+        evaluateVariant('baseline', header);
+
+        // Variant 1: extraNonce2 interpreted in reverse byte order inside coinbase
+        const cbTxidEn2Reversed = coinbaseTxid(job.coinb1, extraNonce1Hex, reverseHex(extraNonce2Hex), job.coinb2);
+        const altMRootEn2Reversed = merkleRoot(cbTxidEn2Reversed, job.merkleBranches);
+        const altHeaderEn2Reversed = Buffer.concat([
+          Buffer.from(headerVersionHex, 'hex').reverse(),
+          Buffer.from(job.prevHashReversed, 'hex'),
+          Buffer.from(altMRootEn2Reversed, 'hex'),
+          Buffer.from(ntime, 'hex').reverse(),
+          Buffer.from(job.nbits, 'hex').reverse(),
+          Buffer.from(nonce, 'hex').reverse()
+        ]);
+        evaluateVariant('extranonce2-reversed', altHeaderEn2Reversed);
+
+        // Variant 1b: both extraNonce1 and extraNonce2 interpreted in reverse byte order
+        const cbTxidEn1En2Reversed = coinbaseTxid(job.coinb1, reverseHex(extraNonce1Hex), reverseHex(extraNonce2Hex), job.coinb2);
+        const altMRootEn1En2Reversed = merkleRoot(cbTxidEn1En2Reversed, job.merkleBranches);
+        const altHeaderEn1En2Reversed = Buffer.concat([
+          Buffer.from(headerVersionHex, 'hex').reverse(),
+          Buffer.from(job.prevHashReversed, 'hex'),
+          Buffer.from(altMRootEn1En2Reversed, 'hex'),
+          Buffer.from(ntime, 'hex').reverse(),
+          Buffer.from(job.nbits, 'hex').reverse(),
+          Buffer.from(nonce, 'hex').reverse()
+        ]);
+        evaluateVariant('extranonce1-extranonce2-reversed', altHeaderEn1En2Reversed);
+
+        const altHeaderReversedMerkle = Buffer.concat([
+          Buffer.from(headerVersionHex, 'hex').reverse(),
+          Buffer.from(job.prevHashReversed, 'hex'),
+          Buffer.from(mRoot, 'hex').reverse(),
+          Buffer.from(ntime, 'hex').reverse(),
+          Buffer.from(job.nbits, 'hex').reverse(),
+          Buffer.from(nonce, 'hex').reverse()
+        ]);
+        evaluateVariant('reversed-merkle-header', altHeaderReversedMerkle);
+
+        // Variant 3: nonce NOT reversed (ASIC may submit nonce in LE wire format already)
+        const altHeaderNoNonceRev = Buffer.concat([
+          Buffer.from(headerVersionHex, 'hex').reverse(),
+          Buffer.from(job.prevHashReversed, 'hex'),
+          Buffer.from(mRoot, 'hex'),
+          Buffer.from(ntime, 'hex').reverse(),
+          Buffer.from(job.nbits, 'hex').reverse(),
+          Buffer.from(nonce, 'hex')   // NOT reversed
+        ]);
+        evaluateVariant('no-nonce-reverse', altHeaderNoNonceRev);
+
+        // Variant 4: ntime NOT reversed
+        const altHeaderNoNtimeRev = Buffer.concat([
+          Buffer.from(headerVersionHex, 'hex').reverse(),
+          Buffer.from(job.prevHashReversed, 'hex'),
+          Buffer.from(mRoot, 'hex'),
+          Buffer.from(ntime, 'hex'),   // NOT reversed
+          Buffer.from(job.nbits, 'hex').reverse(),
+          Buffer.from(nonce, 'hex').reverse()
+        ]);
+        evaluateVariant('no-ntime-reverse', altHeaderNoNtimeRev);
+
+        // Variant 5: neither nonce nor ntime reversed
+        const altHeaderNoNonceNoNtime = Buffer.concat([
+          Buffer.from(headerVersionHex, 'hex').reverse(),
+          Buffer.from(job.prevHashReversed, 'hex'),
+          Buffer.from(mRoot, 'hex'),
+          Buffer.from(ntime, 'hex'),   // NOT reversed
+          Buffer.from(job.nbits, 'hex').reverse(),
+          Buffer.from(nonce, 'hex')    // NOT reversed
+        ]);
+        evaluateVariant('no-nonce-no-ntime-reverse', altHeaderNoNonceNoNtime);
+
+        // Variant 6: word-swap prevhash (each 4-byte group reversed) instead of full reversal
+        const prevHashWS = Buffer.from(job.prevHashReversed, 'hex');
+        for (let i = 0; i < 32; i += 4) prevHashWS.slice(i, i + 4).reverse();
+        const altHeaderWordSwap = Buffer.concat([
+          Buffer.from(headerVersionHex, 'hex').reverse(),
+          prevHashWS,
+          Buffer.from(mRoot, 'hex'),
+          Buffer.from(ntime, 'hex').reverse(),
+          Buffer.from(job.nbits, 'hex').reverse(),
+          Buffer.from(nonce, 'hex').reverse()
+        ]);
+        evaluateVariant('prevhash-word-swap', altHeaderWordSwap);
+
+        // Variant 7: merkle root word-swapped (cgminer flip32 style)
+        const mRootWS = Buffer.from(mRoot, 'hex');
+        for (let i = 0; i < 32; i += 4) mRootWS.slice(i, i + 4).reverse();
+        const altHeaderMerkleWordSwap = Buffer.concat([
+          Buffer.from(headerVersionHex, 'hex').reverse(),
+          Buffer.from(job.prevHashReversed, 'hex'),
+          mRootWS,
+          Buffer.from(ntime, 'hex').reverse(),
+          Buffer.from(job.nbits, 'hex').reverse(),
+          Buffer.from(nonce, 'hex').reverse()
+        ]);
+        evaluateVariant('merkle-word-swap', altHeaderMerkleWordSwap);
+
+        // Variant 8: merkle word-swapped + nonce NOT reversed
+        const mRootWSNoNonce = Buffer.from(mRoot, 'hex');
+        for (let i = 0; i < 32; i += 4) mRootWSNoNonce.slice(i, i + 4).reverse();
+        const altHeaderMerkleWordSwapNoNonce = Buffer.concat([
+          Buffer.from(headerVersionHex, 'hex').reverse(),
+          Buffer.from(job.prevHashReversed, 'hex'),
+          mRootWSNoNonce,
+          Buffer.from(ntime, 'hex').reverse(),
+          Buffer.from(job.nbits, 'hex').reverse(),
+          Buffer.from(nonce, 'hex')
+        ]);
+        evaluateVariant('merkle-word-swap-no-nonce-reverse', altHeaderMerkleWordSwapNoNonce);
+
+        // Variant 9: previous hash in natural byte order (no reversal)
+        if (typeof job.template?.previousblockhash === 'string' && /^[0-9a-fA-F]{64}$/.test(job.template.previousblockhash)) {
+          const altHeaderPrevHashNatural = Buffer.concat([
+            Buffer.from(headerVersionHex, 'hex').reverse(),
+            Buffer.from(job.template.previousblockhash, 'hex'),
+            Buffer.from(mRoot, 'hex'),
+            Buffer.from(ntime, 'hex').reverse(),
+            Buffer.from(job.nbits, 'hex').reverse(),
+            Buffer.from(nonce, 'hex').reverse()
+          ]);
+          evaluateVariant('prevhash-natural-order', altHeaderPrevHashNatural);
+        }
+
+        // Variant 10: version in natural byte order (no reversal)
+        const altHeaderVersionNatural = Buffer.concat([
+          Buffer.from(headerVersionHex, 'hex'),
+          Buffer.from(job.prevHashReversed, 'hex'),
+          Buffer.from(mRoot, 'hex'),
+          Buffer.from(ntime, 'hex').reverse(),
+          Buffer.from(job.nbits, 'hex').reverse(),
+          Buffer.from(nonce, 'hex').reverse()
+        ]);
+        evaluateVariant('version-natural-order', altHeaderVersionNatural);
+
+        if (runDeepDiagnostics) {
+          const reverseBranchBytes = (arr) => arr.map(b => reverseHex(b));
+          const reverseBranchOrder = (arr) => [...arr].reverse();
+          const comboBranches = [
+            { name: 'merkle-branches-byte-reversed', branches: reverseBranchBytes(job.merkleBranches) },
+            { name: 'merkle-branches-order-reversed', branches: reverseBranchOrder(job.merkleBranches) },
+            { name: 'merkle-branches-order-and-byte-reversed', branches: reverseBranchBytes(reverseBranchOrder(job.merkleBranches)) }
+          ];
+
+          for (const combo of comboBranches) {
+            const comboMerkle = merkleRoot(cbTxidNatural, combo.branches);
+            const comboHeader = Buffer.concat([
+              Buffer.from(headerVersionHex, 'hex').reverse(),
+              Buffer.from(job.prevHashReversed, 'hex'),
+              Buffer.from(comboMerkle, 'hex'),
+              Buffer.from(ntime, 'hex').reverse(),
+              Buffer.from(job.nbits, 'hex').reverse(),
+              Buffer.from(nonce, 'hex').reverse()
+            ]);
+            evaluateVariant(combo.name, comboHeader);
+
+            const comboHeaderNoNonceRev = Buffer.concat([
+              Buffer.from(headerVersionHex, 'hex').reverse(),
+              Buffer.from(job.prevHashReversed, 'hex'),
+              Buffer.from(comboMerkle, 'hex'),
+              Buffer.from(ntime, 'hex').reverse(),
+              Buffer.from(job.nbits, 'hex').reverse(),
+              Buffer.from(nonce, 'hex')
+            ]);
+            evaluateVariant(`${combo.name}-no-nonce-reverse`, comboHeaderNoNonceRev);
+          }
+        }
+
+        if (variantResults.length > 0) {
+          const closest = variantResults.reduce((best, current) => {
+            if (!best) return current;
+            return current.hashInt < best.hashInt ? current : best;
+          }, null);
+          if (closest) {
+            closestVariant = closest.name;
+            closestVariantHashHex = closest.hash;
+          }
+        }
+      } catch {
+        // Best-effort diagnostics only.
+      }
+
+      return {
+        valid: false,
+        error: 'Low difficulty share',
+        hashHex,
+        diag: {
+          runDeepDiagnostics,
+          meetsShareDifficultyNoReverse,
+          variantPass,
+          variantHashHex,
+          closestVariant,
+          closestVariantHashHex,
+          headerHex: header.toString('hex'),
+          extraNonce1: extraNonce1Hex
+        }
+      };
+    }
 
     // Check DOGE2 AuxPoW merge mining (same Scrypt hash, checked against DOGE2 target)
     if (job.auxData) {
@@ -368,11 +618,11 @@ class JobManager extends EventEmitter {
     if (meetsDifficulty) {
       // Build full block for submission
       const blockHex = this._buildBlockHex(job, extraNonce1Hex, extraNonce2Hex, header);
-      this._recordShare(sharesDiff);
+      this._recordShare(normalizedShareDiff);
       return { valid: true, meetsDifficulty: true, blockHex, hashHex };
     }
 
-    this._recordShare(sharesDiff);
+    this._recordShare(normalizedShareDiff);
     return { valid: true, meetsDifficulty: false, hashHex };
   }
 
