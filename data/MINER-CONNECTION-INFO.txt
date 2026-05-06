@@ -1,0 +1,27 @@
+============================================================
+  LC2/DOGE2 SOLO MINER - LIVE CONNECTION INFO
+============================================================
+
+Type this exact address into miners on the same network:
+
+LC2: 172.28.64.1:3335
+
+Merged mining note:
+- DOGE2 is AuxPoW merge-mined automatically from LC2 shares.
+- ASICs should use one pool endpoint only (LC2).
+- Do not configure a second DOGE2 port in ASIC settings.
+
+Current block rewards:
+- LC2: 50 LC2
+  Current reward: 50 LC2 per block.
+- DOGE2: 500,000 DOGE2
+  Current reward: 500,000 DOGE2 per block. Halving in roughly 53 days to 250,000 DOGE2.
+
+If your miner requires the stratum+tcp:// prefix, use: stratum+tcp://172.28.64.1:3335
+
+Dashboard: http://172.28.64.1:8082/
+Local dashboard: http://127.0.0.1:8082/
+
+If a miner is running on this same PC, you can also use 127.0.0.1 instead of the LAN IP.
+
+Generated: 5/5/2026, 5:48:02 PM

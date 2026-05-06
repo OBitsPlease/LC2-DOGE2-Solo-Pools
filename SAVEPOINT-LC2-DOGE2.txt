@@ -1,0 +1,66 @@
+LC2/DOGE2 STRATUM PROXY SAVEPOINT
+Created: 2026-05-04
+
+Current Goal
+- Fix 100% share rejection from VolcMiner D1 MINI on LC2 stratum proxy (192.168.1.79:3333).
+
+Current Observed State (latest confirmed)
+- Miner is hashing and submitting continuously to local proxy.
+- Miner summary shows Pool Rejected%=100.0000.
+- Proxy log shows continuous low-diff-sample with variantPass:null.
+- Example summary snapshot:
+  - Accepted: 294
+  - Rejected: 294
+  - Difficulty Accepted: 0
+  - Difficulty Rejected: 294
+  - Pool Rejected%: 100%
+
+Key Root-Cause Work Already Done
+1) Removed earlier duplicate-session killer (it caused reconnect loops).
+2) Added diagnostics:
+   - low-diff-sample includes headerHex, extraNonce1/2, variant fields.
+   - client-configure and submit-extra-params logging hooks.
+3) Fixed merkle formula usage direction in share path and aux path:
+   - Uses natural coinbase txid for merkle hashing.
+4) Added proper coinbase merkle branch-path builder (not raw full tx list).
+5) Corrected branch-path hashing order to compute in internal order and emit notify branches in display order.
+6) Added support for optional 6th mining.submit param (submitted version) and use it in header reconstruction when present.
+7) Rebuilt exe multiple times:
+   - dist/lc2-solo-proxy-windows.exe
+
+Files Edited This Session
+- src/utils.js
+  - Added buildCoinbaseMerkleBranches(...)
+  - Updated branch-path byte-order handling.
+- src/job-manager.js
+  - Uses buildCoinbaseMerkleBranches for LC2 and DOGE2 template processing.
+  - processShare now accepts submittedVersion and uses it when valid.
+- src/stratum-server.js
+  - _handleSubmit parses optional submittedVersion from params[5].
+  - Passes submittedVersion to processShare.
+  - low-diff-sample logs submittedVersion.
+
+What Is Still Missing
+- A single accepted LC2 Stratum test vector from LC2 dev to lock exact byte-order/submit semantics.
+- Specifically needed from dev:
+  1) one mining.notify payload,
+  2) extranonce1 + extranonce2 size,
+  3) one accepted mining.submit payload,
+  4) whether submit param #6 (rolled version) must be used.
+
+Minimal Message Sent/To Send to LC2 Dev
+- "VolcMiner D1 MINI submits at diff1 but proxy rejects 100%. Please provide one accepted stratum test vector: mining.notify, extranonce1/2 size, one accepted mining.submit, and whether 6th submit version param must be included in header validation."
+
+First Steps When Resuming
+1) Ensure updated proxy exe is running:
+   - bin/windows/start-miner-stack.ps1
+2) Confirm listener:
+   - Test-NetConnection 127.0.0.1 -Port 3333
+3) Keep miner pointed to local proxy only.
+4) Collect:
+   - Miner: echo '{"command":"summary"}' | nc 127.0.0.1 8359
+   - Proxy: Get-Content "$env:LOCALAPPDATA\LC2 DOGE2 Solo Miner\logs\multi-asic-diagnostic.log" -Tail 80
+5) If LC2 dev provides test vector, implement exact field ordering/endian behavior and retest.
+
+Important Operational Note
+- If starting node directly with `node src/index.js` exits with code 1, use the stack script so daemon/proxy dependencies are started in correct order.

@@ -681,28 +681,17 @@ class JobManager extends EventEmitter {
 
   async _submitAuxBlock(lc2Job, extraNonce1Hex, extraNonce2Hex, lc2HeaderBytes) {
     const { buildFullCoinbaseTx } = require('./coinbase-builder');
-    const cachedAuxHeight = lc2Job.auxData.template.height;
-
-    console.log(`[DOGE2] 🎯 AuxPoW difficulty met! Building block for height ${cachedAuxHeight}...`);
-
-    // Fetch a fresh DOGE2 template at submit time to avoid stale-block rejection.
-    // If DOGE2 has already moved past this height, the submission would be rejected
-    // with "high-hash" or "stale" — skip it rather than waste the RPC call.
-    let auxData;
-    try {
-      auxData = await this._auxJobMgr.getAuxData();
-    } catch (err) {
-      console.error(`[DOGE2] Could not refresh aux data before submit: ${err.message} — falling back to cached template`);
-      auxData = lc2Job.auxData;
-    }
-
+    
+    // CRITICAL: Use the cached auxData from the job, NOT a refreshed template.
+    // The merged mining commitment in the LC2 coinbase was built for this specific
+    // DOGE2 header. If we use a refreshed template, the header bytes may differ
+    // (different merkle root, timestamp, etc.), causing hash mismatch or target miss.
+    const auxData = lc2Job.auxData;
     const auxHeight = auxData.template.height;
-    if (auxHeight !== cachedAuxHeight) {
-      console.warn(`[DOGE2] Stale aux candidate: job was for height ${cachedAuxHeight} but DOGE2 is now at height ${auxHeight} — skipping submit`);
-      return;
-    }
 
-    // Verify the LC2 hash still meets the fresh DOGE2 target (difficulty may have changed)
+    console.log(`[DOGE2] 🎯 AuxPoW difficulty met! Building block for height ${auxHeight}...`);
+
+    // Verify the LC2 hash meets the DOGE2 target
     const scrypt = require('scryptsy');
     const lc2Hash = scrypt(lc2HeaderBytes, lc2HeaderBytes, 1024, 1, 1, 32);
     const lc2HashHex = lc2Hash.toString('hex');
@@ -724,7 +713,7 @@ class JobManager extends EventEmitter {
     });
 
     if (!meetsAuxTargetLE) {
-      console.warn(`[DOGE2] LC2 hash no longer meets refreshed DOGE2 target — skipping submit`);
+      console.warn(`[DOGE2] LC2 hash does not meet DOGE2 target — skipping submit`);
       return;
     }
 

@@ -1,0 +1,594 @@
+LC2 DOGE2 SOLO MINER - IMPROVEMENT ROADMAP
+==========================================
+Generated: 2026-05-03
+Status: Planned - not yet implemented
+
+This document captures the full 12-phase improvement plan for making the app
+more bulletproof, with automatic in-app monitoring so users are certain their
+miners are truly mining. Each phase should be implemented, validated, and
+tested before moving to the next.
+
+
+================================================================================
+IMPLEMENTATION PRINCIPLE
+================================================================================
+
+For each phase:
+  1. Add backend signal
+  2. Expose it via API
+  3. Show it in dashboard
+  4. Add automatic validation/monitoring around it
+  5. Run a focused regression check before moving on
+
+Testing discipline after each step:
+  1. Targeted functional check for that new feature
+  2. Regression check on stratum connectivity
+  3. Regression check on dashboard rendering
+  4. Regression check on merged-mining visibility
+  5. Rebuild EXE when runtime behavior changed
+  6. Validate against the packaged runtime, not just source
+     (This matters because the app runs from the EXE under watchdog)
+
+
+================================================================================
+12-PHASE PLAN SUMMARY
+================================================================================
+
+Phase 1  - Mining Readiness Backend
+Phase 2  - Health / Readiness API
+Phase 3  - Dashboard Readiness Card
+Phase 4  - Last Activity Timestamps
+Phase 5  - Share Quality Metrics
+Phase 6  - AuxPoW Status Panel
+Phase 7  - Fallback Port Visibility
+Phase 8  - Miner Inactivity Warnings
+Phase 9  - Automatic Startup Validation
+Phase 10 - Continuous Runtime Monitors
+Phase 11 - Watchdog Escalation Rules
+Phase 12 - Soak and Failure Testing
+
+
+================================================================================
+PHASE 1 - MINING READINESS BACKEND
+================================================================================
+
+GOAL: Make the app reliably answer one question for the user:
+"Is my miner actually in a state where it can produce valid work right now?"
+
+----------------------------------------------------------------------
+Step 1: Define Readiness Model
+----------------------------------------------------------------------
+Add one shared readiness object in the backend, recalculated on a timer
+and on important events.
+
+Top-level fields:
+  - overallState
+  - overallReason
+  - updatedAt
+  - isReadyToMine
+  - isDegraded
+  - activeWarnings
+  - coins
+  - miners
+  - runtime
+
+overallState values:
+  - ready
+  - starting
+  - syncing
+  - no-peers
+  - rpc-degraded
+  - no-jobs
+  - miners-idle
+  - aux-degraded
+  - error
+
+coins.<coinId> fields:
+  - enabled
+  - symbol
+  - rpcOk
+  - lastRpcSuccessAt
+  - lastRpcErrorAt
+  - lastRpcError
+  - lastJobAt
+  - jobAgeSec
+  - blockHeight
+  - headers
+  - blocksBehind
+  - verificationProgress
+  - initialBlockDownload
+  - peerCount
+  - hasMinersConnected
+  - connectedMinerCount
+  - lastValidShareAt
+  - lastShareAgeSec
+  - validShares1m
+  - staleShares1m
+  - rejectedShares1m
+  - readinessState
+  - readinessReason
+
+runtime fields:
+  - dashboardPort
+  - configuredDashboardPort
+  - fallbackDashboardPortUsed
+  - processUptimeSec
+  - rssMb
+  - watchdogExpected
+  - startupValidationPassed
+
+miners summary fields:
+  - connectedCount
+  - activeCount
+  - idleCount
+  - lastAnyValidShareAt
+  - lastAnyValidShareAgeSec
+
+----------------------------------------------------------------------
+Step 2: Define Readiness Rules
+----------------------------------------------------------------------
+Keep the first version deterministic and easy to reason about.
+
+Rule order (first match wins):
+  1. "starting"      - if app uptime is below startup grace period
+  2. "rpc-degraded"  - if LC2 RPC is down
+  3. "syncing"       - if LC2 is in IBD or far behind headers
+  4. "no-peers"      - if LC2 peer count is zero for a threshold
+  5. "no-jobs"       - if no fresh LC2 job in threshold period
+  6. "miners-idle"   - if miners connected but no valid shares for threshold
+  7. "aux-degraded"  - if DOGE2 RPC is down while LC2 is healthy
+  8. "ready"         - only if none of the above are active
+
+Initial thresholds:
+  - Startup grace:        60 to 120 seconds
+  - No peers threshold:   60 seconds
+  - No jobs threshold:    90 seconds
+  - Miner idle threshold: 120 to 180 seconds after miner connects
+  - Aux degraded:         immediate warning (not full "not ready")
+
+Policy decisions:
+  - LC2 state controls "ready to mine"
+  - DOGE2 aux issues degrade status but do not mark app "not mining"
+    if LC2 is healthy
+
+----------------------------------------------------------------------
+Step 3: Capture Missing Signals
+----------------------------------------------------------------------
+Most raw data already exists. Add the missing timestamps and counters.
+
+Timestamps to record:
+  - Last successful RPC call time per coin
+  - Last RPC error time per coin
+  - Last job creation time per coin
+  - Last valid share time per pool
+  - Last share rejection time per pool
+  - Last stale share time per pool
+  - Last aux candidate time
+  - Last aux submit time
+  - Last aux accept/reject time
+
+Where to capture them:
+  - RPC success/failure: inside RPC client wrapper or near callers
+  - Job creation:        in JobManager._poll
+  - Share results:       in StratumServer._handleSubmit
+  - Aux activity:        in current DOGE2 diagnostic path
+
+Keep as in-memory runtime state. Do NOT compute from logs.
+
+----------------------------------------------------------------------
+Step 4: Build a Single Health Service
+----------------------------------------------------------------------
+Create one small backend module (src/health-service.js) responsible for:
+  - Storing runtime health state
+  - Updating timestamps/counters from events
+  - Computing readiness snapshot
+  - Returning a serializable JSON payload
+
+Keep it separate from dashboard-server.js.
+
+Public methods:
+  - markRpcSuccess(coinId)
+  - markRpcError(coinId, error)
+  - markJobCreated(coinId, meta)
+  - markValidShare(poolId, workerName)
+  - markRejectedShare(poolId, workerName, reason)
+  - markStaleShare(poolId, workerName)
+  - markAuxEvent(type, context)
+  - getReadinessSnapshot()
+
+----------------------------------------------------------------------
+Step 5: Expose Health API Endpoints
+----------------------------------------------------------------------
+Add only a few endpoints in Phase 1.
+
+  GET /dashboard/health
+  GET /dashboard/health/coins
+  GET /dashboard/health/miners
+
+Minimum payload for GET /dashboard/health:
+  - overallState
+  - overallReason
+  - isReadyToMine
+  - updatedAt
+  - activeWarnings
+  - runtime
+  - coins.lc2
+  - coins.doge2
+  - miners
+
+Keep read-only. No controls yet.
+
+----------------------------------------------------------------------
+Step 6: Add Dashboard Readiness Card
+----------------------------------------------------------------------
+One card near the top of the dashboard. Not a full health center yet.
+
+Card contents:
+  - Headline state
+  - One-sentence reason
+  - Last update time
+  - One compact detail line
+
+Example states and reasons:
+  - Ready
+    "LC2 synced, jobs fresh, miners submitting valid shares."
+  - Syncing
+    "LC2 node is still catching up to headers."
+  - No Peers
+    "LC2 has no connected peers, so fresh work may stop."
+  - No Fresh Jobs
+    "No new job template has been built recently."
+  - Miners Idle
+    "Miners are connected but no valid shares arrived recently."
+  - Aux Degraded
+    "LC2 mining is active, but DOGE2 AuxPoW is currently degraded."
+
+Color mapping:
+  - Green:  ready
+  - Yellow: syncing, miners-idle, aux-degraded
+  - Red:    rpc-degraded, no-peers, no-jobs, error
+
+----------------------------------------------------------------------
+Step 7: Add Small Detail Strip Under the Card
+----------------------------------------------------------------------
+Show only three supporting values:
+  - Last valid share
+  - Last job
+  - LC2 peers
+
+----------------------------------------------------------------------
+Step 8: Phase 1 Validation Checklist
+----------------------------------------------------------------------
+Run these checks in order after implementation:
+
+  1. Normal startup check
+     Expected: readiness becomes "starting", then "syncing" or "ready"
+               card updates without reload issues
+
+  2. Miner connected and submitting
+     Expected: "Last valid share" updates
+               Overall state becomes "ready"
+
+  3. Kill DOGE2 RPC
+     Expected: State becomes "aux-degraded"
+               App still shows LC2 as mining-capable
+
+  4. Kill LC2 RPC
+     Expected: State becomes "rpc-degraded"
+               Readiness becomes not ready
+
+  5. Remove peers or simulate no-peer state
+     Expected: State becomes "no-peers"
+
+  6. Let miner stop submitting while still connected
+     Expected: State becomes "miners-idle"
+
+  7. Restart proxy
+     Expected: State returns to "starting", then recovers cleanly
+
+----------------------------------------------------------------------
+Step 9: Phase 1 Definition of Done
+----------------------------------------------------------------------
+Phase 1 is COMPLETE only when ALL of these are true:
+  [ ] Backend computes one consistent readiness snapshot
+  [ ] Snapshot is exposed through API
+  [ ] Dashboard shows one readiness card
+  [ ] Readiness changes under real fault conditions
+  [ ] Packaged EXE is rebuilt and tested (not just source)
+  [ ] No regressions in current mining flow
+
+----------------------------------------------------------------------
+Step 10: What NOT To Add in Phase 1
+----------------------------------------------------------------------
+Do not add these yet - save for later phases:
+  - Per-worker warnings UI
+  - Full share-quality charts
+  - Watchdog restart escalation changes
+  - Port fallback UI detail
+  - Aux history panel
+  - Soak test automation
+
+
+================================================================================
+PHASE 2 - HEALTH / READINESS API
+================================================================================
+
+GOAL: Expose health signals cleanly to the UI and any future scripts.
+
+Endpoints to add:
+  - Overall readiness summary
+  - Per-coin health
+  - Per-worker health
+  - AuxPoW health
+  - Timestamps and counters
+
+Validation after this phase:
+  - Hit endpoints directly
+  - Compare API values to live logs and dashboard values
+  - Restart app and verify values recover cleanly
+
+
+================================================================================
+PHASE 3 - DASHBOARD READINESS CARD
+================================================================================
+
+GOAL: Give users one obvious status instead of forcing them to
+interpret raw numbers.
+
+Card with states:
+  - Ready
+  - Syncing
+  - No peers
+  - RPC degraded
+  - No recent jobs
+  - Miner connected but no valid shares recently
+  - AuxPoW degraded
+
+Include one-line explanation text in plain English.
+
+Validation:
+  - Simulate each bad state
+  - Confirm the card changes correctly
+  - Confirm explanations are plain English
+
+
+================================================================================
+PHASE 4 - LAST ACTIVITY TIMESTAMPS
+================================================================================
+
+GOAL: Answer "is it doing anything right now?"
+
+Show:
+  - Last successful RPC call
+  - Last new job time
+  - Last valid share time
+  - Last accepted AuxPoW submit time
+  - Last block found time
+
+Validation:
+  - Watch timestamps update during live mining
+  - Confirm stalled states stop moving
+
+
+================================================================================
+PHASE 5 - SHARE QUALITY METRICS
+================================================================================
+
+GOAL: Stop users from confusing "connected" with "healthy."
+
+Add:
+  - Accepted shares count
+  - Rejected shares count
+  - Stale shares count
+  - Accepted %
+  - Rejected %
+  - Stale %
+  - 15-minute trend or sparkline
+
+Validation:
+  - Submit malformed share - verify counter increments
+  - Submit stale share - verify counter increments
+  - Confirm UI reflects changes correctly
+
+
+================================================================================
+PHASE 6 - AUXPOW STATUS PANEL
+================================================================================
+
+GOAL: Make DOGE2 merge-mining status obvious instead of implied.
+
+Show:
+  - Merge-mined via LC2 label
+  - Last aux candidate
+  - Aux submits count
+  - Aux accepts count
+  - Aux rejects count
+  - Aux RPC errors count
+  - Last aux event timestamp
+
+Validation:
+  - Confirm counters move during LC2 mining
+  - Break DOGE2 RPC temporarily
+  - Verify aux degradation is visible in dashboard
+
+
+================================================================================
+PHASE 7 - FALLBACK PORT VISIBILITY
+================================================================================
+
+GOAL: Eliminate user confusion when configured ports are occupied.
+
+Show (in dashboard, connection info file, and health API):
+  - Configured port
+  - Live port
+  - Whether fallback was used
+
+Validation:
+  - Intentionally occupy 3333, 3334, and 8081
+  - Confirm live port shown everywhere matches reality
+
+
+================================================================================
+PHASE 8 - MINER INACTIVITY WARNINGS
+================================================================================
+
+GOAL: Flag "connected but not really mining."
+
+Per-worker, show warning if:
+  - Connected but no valid share for threshold period
+  - Only stale/rejected shares recently
+  - Idle too long
+  - Difficulty changes but shares stop
+
+Validation:
+  - Leave a client idle, confirm warning appears
+  - Force bad submits, confirm warning appears
+  - Confirm warning clears when miner recovers
+
+
+================================================================================
+PHASE 9 - AUTOMATIC STARTUP VALIDATION
+================================================================================
+
+GOAL: Give all users an automatic first-pass check without requiring
+manual commands.
+
+On startup, the app should automatically run internal checks:
+  - Dashboard responding
+  - Stratum listening
+  - RPC reachable
+  - Initial job available
+  - Readiness state computed
+
+Results should be visible in dashboard and logs, not hidden.
+
+Validation:
+  - Normal startup - confirm all checks pass
+  - Startup with one broken dependency - confirm failure is surfaced
+  - Confirm failure is visible and plain English
+
+
+================================================================================
+PHASE 10 - CONTINUOUS RUNTIME MONITORS
+================================================================================
+
+GOAL: Catch "alive but wrong" conditions automatically.
+
+Run in-app monitors for:
+  - No valid shares for N minutes while miners connected
+  - No new job for N minutes
+  - Repeated RPC failures
+  - Repeated aux submit failures
+  - Share rejection / stale spike
+  - Zero peers or sync stall
+  - Memory growth trend
+  - Client count growth trend
+
+Validation:
+  - Simulate each threshold crossing
+  - Ensure warnings appear once and do not spam
+
+
+================================================================================
+PHASE 11 - WATCHDOG ESCALATION RULES
+================================================================================
+
+GOAL: Not just restart dead things, but escalate meaningful unhealthy states.
+
+Add watchdog logic for:
+  - Repeated degraded readiness state
+  - Repeated proxy restart loops
+  - Long no-job condition
+  - Persistent zero-peer DOGE2 state
+  - Persistent RPC failure state
+
+Escalation should:
+  - Log warning
+  - Mark dashboard degraded
+  - Optionally restart affected component
+  - Avoid endless restart thrash
+
+Validation:
+  - Force recurring failure
+  - Confirm escalation path behaves predictably
+
+
+================================================================================
+PHASE 12 - SOAK AND RESILIENCE TESTING
+================================================================================
+
+GOAL: Verify the system holds up under real use.
+
+Tests to run:
+  - 24-hour soak
+  - 72-hour soak if possible
+  - Multi-miner connection churn
+  - Daemon restart during mining
+  - Network loss and recovery
+  - Port conflict startup
+  - Malformed share flood
+  - Stale share burst
+
+Validation metrics:
+  - Memory over time
+  - Socket count over time
+  - Share counters over time
+  - Dashboard responsiveness
+  - No silent degradation
+
+
+================================================================================
+WHAT SHOULD BE AUTOMATIC FOR USERS
+================================================================================
+
+The app should automatically (without user intervention):
+  1. Compute readiness continuously
+  2. Detect miner inactivity
+  3. Detect stale/reject spikes
+  4. Detect RPC/job/AuxPoW failures
+  5. Surface warnings in dashboard
+  6. Write clear logs
+  7. Keep recent health history (visible for last 5-10 minutes)
+
+NOTE: The npm run selftest command is a DEVELOPER validation tool.
+User-facing certainty should come from built-in continuous readiness
+monitoring running inside the app automatically.
+
+
+================================================================================
+RECOMMENDED BUILD ORDER
+================================================================================
+
+  Phase  1  -  Mining readiness backend signals
+  Phase  2  -  Health / readiness API
+  Phase  3  -  Dashboard readiness card
+  Phase  4  -  Last activity timestamps
+  Phase  5  -  Share quality metrics
+  Phase  6  -  AuxPoW status panel
+  Phase  7  -  Fallback port visibility
+  Phase  8  -  Miner inactivity warnings
+  Phase  9  -  Automatic startup validation
+  Phase 10  -  Continuous runtime monitors
+  Phase 11  -  Watchdog escalation rules
+  Phase 12  -  Soak and failure test pass (after each prior phase)
+
+
+================================================================================
+CURRENT STATUS
+================================================================================
+
+Completed before this plan:
+  [x] v1.0.28 released with multi-ASIC diagnostics and stability updates
+  [x] Share validation bug fixed (job-manager.js)
+      - Low-difficulty shares now correctly rejected
+      - Fix is in source but NOT yet in EXE or installer (needs v1.0.29)
+  [x] Developer validation script added (npm run selftest)
+  [x] Single-port AuxPoW messaging corrected
+  [x] DOGE2 merge-mined via LC2 (no second ASIC port needed)
+
+Immediate next actions:
+  1. Rebuild EXE and installer for the share validation fix
+  2. Bump to v1.0.29 and publish release
+  3. Begin Phase 1 implementation
+
+================================================================================
