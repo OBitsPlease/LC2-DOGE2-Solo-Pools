@@ -448,20 +448,20 @@ Start-Process -FilePath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powersh
 Write-Bootstrap 'Started fresh watchdog process.'
 
 $summary = $null
+# Proxy running in source mode writes summary to the project root; packaged exe writes to runtime root.
+# Check both and use whichever was written after launch started.
+$SummaryPathAlt = Join-Path $ProjectRoot 'data\startup-summary.json'
 for ($i = 0; $i -lt 90; $i++) {
-    if (Test-Path $SummaryPath) {
+    foreach ($sp in @($SummaryPath, $SummaryPathAlt)) {
+        if (-not (Test-Path $sp)) { continue }
         try {
-            $summaryItem = Get-Item -Path $SummaryPath -ErrorAction SilentlyContinue
-            if ($summaryItem -and $summaryItem.LastWriteTime -lt $launchStartedAt.AddSeconds(-5)) {
-                Start-Sleep -Seconds 2
-                continue
-            }
-            $summary = Get-Content -Raw -Path $SummaryPath | ConvertFrom-Json
-            if ($summary -and $summary.coins) { break }
-        } catch {
-            # keep waiting until file is complete
-        }
+            $summaryItem = Get-Item -Path $sp -ErrorAction SilentlyContinue
+            if ($summaryItem -and $summaryItem.LastWriteTime -lt $launchStartedAt.AddSeconds(-5)) { continue }
+            $candidate = Get-Content -Raw -Path $sp | ConvertFrom-Json
+            if ($candidate -and $candidate.coins) { $summary = $candidate; break }
+        } catch {}
     }
+    if ($summary) { break }
     Start-Sleep -Seconds 2
 }
 
