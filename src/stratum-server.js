@@ -560,7 +560,8 @@ class StratumServer extends EventEmitter {
     }
 
     if (result.meetsDifficulty) {
-      console.log(`[${this.config.symbol}] *** BLOCK FOUND by ${workerName}! Submitting...`);
+      const blen = result.blockHex ? result.blockHex.length : 0;
+      console.log(`[${this.config.symbol}] *** BLOCK FOUND by ${workerName}! Submitting... hexLen=${blen} tail40=${result.blockHex ? result.blockHex.slice(-40) : '(null)'}`);
       try {
         const submitResult = await this.jobManager.rpc.submitBlock(result.blockHex);
         if (submitResult === null || submitResult === undefined) {

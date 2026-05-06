@@ -718,10 +718,12 @@ class JobManager extends EventEmitter {
       }
     );
 
-    // Block = header + txcount + coinbase_tx + other_txs
+    // Block = header + txcount + coinbase_tx + other_txs + mweb extension
     const txCount = require('./utils').varInt(1 + job.template.transactions.length);
     const otherTxs = job.template.transactions.map(tx => tx.data).join('');
     const mwebHex = job.mwebHex || '';
+
+    console.log(`[${this.coin.symbol}] _buildBlockHex: height=${job.height} segwit=${segwitCoinbase} mwebHex.len=${mwebHex.length} mwebHex.preview=${mwebHex.slice(0, 20) || '(empty)'}`);
 
     return header.toString('hex') + txCount.toString('hex') + coinbaseTxHex + otherTxs + mwebHex;
   }
