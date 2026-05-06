@@ -71,6 +71,7 @@ const coins = {
     logo: 'doge2-logo.png',
     blockReward: 500000,  // 500,000 DOGE2/block (early randomized phase)
     blockRewardNote: 'Current reward: 500,000 DOGE2 per block. Halving in roughly 53 days to 250,000 DOGE2.',
+    coinPrice: 0.00000037, // DC2/USDT on NestEx — update manually: https://trade.nestex.one/spot/DC2
 
     // DOGE2 is merge-mined from LC2 via AuxPoW — miners connect to LC2 stratum only
     mergedParent: 'lc2',
@@ -101,7 +102,7 @@ const coins = {
 };
 
 module.exports = {
-  appVersion: '1.0.39',
+  appVersion: '1.0.40',
   coins,
   dashboard: {
     port: 8081   // web dashboard port (8080 is used by existing dashboard)

@@ -724,6 +724,14 @@ function fmtReward(v) {
   if (Number.isInteger(v)) return v.toLocaleString();
   return v.toFixed(4);
 }
+function fmtPrice(p) {
+  if (!Number.isFinite(p) || p <= 0) return '–';
+  if (p >= 1)       return p.toFixed(4);
+  if (p >= 0.0001)  return p.toFixed(6);
+  // Very small prices: show up to 8 significant decimal digits
+  const s = p.toFixed(10).replace(/0+$/, '').replace(/\.$/, '');
+  return s;
+}
 function setEl(id, val) { const el = document.getElementById(id); if (el) el.textContent = val; }
 async function get(url) { const r = await fetch(url); if (!r.ok) throw new Error(r.statusText); return r.json(); }
 
@@ -1235,7 +1243,7 @@ async function loadWalletStats() {
         const d = await fetch(`/dashboard/wallet-stats?poolId=${POOL_ID}`).then(r => r.json());
         walletStatsCache = d;
         const sym = d.symbol || POOL_SYMBOL;
-        setEl('zcl-price', d.price !== null ? `$${d.price?.toFixed(4)||'–'}` : '–');
+        setEl('zcl-price', d.price !== null ? '$' + fmtPrice(d.price) : '–');
     const totalExpected = Number.isFinite(Number(d.totalExpected)) ? Number(d.totalExpected) : Number(d.balance || 0);
     const spendable = Number.isFinite(Number(d.spendable)) ? Number(d.spendable) : Number(d.balance || 0);
     const immature = Number.isFinite(Number(d.immature)) ? Number(d.immature) : 0;
