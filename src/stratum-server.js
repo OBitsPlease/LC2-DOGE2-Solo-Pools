@@ -581,9 +581,25 @@ class StratumServer extends EventEmitter {
           });
         } else {
           console.log(`[${this.config.symbol}] Block rejected: ${submitResult}`);
+          writeDiagnosticLog('block-rejected', {
+            symbol: this.config.symbol,
+            workerName,
+            height: this.jobManager.currentJob?.height || null,
+            result: String(submitResult),
+            connectedClients: this.clients.size,
+            hashHex: result.hashHex || null
+          });
         }
       } catch (err) {
         console.error(`[${this.config.symbol}] submitblock error: ${err.message}`);
+        writeDiagnosticLog('block-submit-rpc-error', {
+          symbol: this.config.symbol,
+          workerName,
+          height: this.jobManager.currentJob?.height || null,
+          error: err.message,
+          connectedClients: this.clients.size,
+          hashHex: result.hashHex || null
+        });
       }
     }
 

@@ -74,6 +74,38 @@ function getCoinForPool(poolId) {
   return { coinId, coin: config.coins[coinId] };
 }
 
+async function getWalletSnapshot(mgr) {
+  const out = {
+    spendable: 0,
+    unconfirmed: 0,
+    immature: 0,
+    totalExpected: 0,
+    recentTransactions: []
+  };
+
+  const rpc = mgr?.jobManager?.rpc;
+  if (!rpc) return out;
+
+  try {
+    [out.spendable, out.unconfirmed] = await Promise.all([
+      rpc.call('getbalance').catch(() => 0),
+      rpc.call('getunconfirmedbalance').catch(() => 0)
+    ]);
+
+    const ltx = await rpc.call('listtransactions', ['*', 200, 0]).catch(() => []);
+    out.immature = ltx
+      .filter(t => t && t.category === 'immature')
+      .reduce((s, t) => s + Number(t.amount || 0), 0);
+
+    out.totalExpected = Number(out.spendable || 0) + Number(out.immature || 0);
+    out.recentTransactions = Array.isArray(ltx) ? ltx.slice(0, 20) : [];
+  } catch (_) {
+    // Keep dashboard responsive even if wallet RPC calls fail.
+  }
+
+  return out;
+}
+
 // ─── JSON response helpers ─────────────────────────────────────────────────
 function jsonOk(res, data) {
   res.writeHead(200, {
@@ -144,6 +176,7 @@ function getLivePoolStats(poolId) {
   const netInfo = mgr?.jobManager?._networkInfo || {};
   const networkDifficulty = jobInfo.difficulty || netInfo.networkDifficulty || 0;
   const poolEffort = ds.getRoundEffort(poolId, networkDifficulty);
+  const confirmedRewards = ds.sumBlockRewards(poolId, { states: ['confirmed'] });
   return {
     pool: {
       id: poolId,
@@ -162,10 +195,13 @@ function getLivePoolStats(poolId) {
         headers:            netInfo.headers || 0,
         verificationProgress: typeof netInfo.verificationProgress === 'number' ? netInfo.verificationProgress : 0,
         initialBlockDownload: !!netInfo.initialBlockDownload,
-        blocksBehind:        Number.isFinite(netInfo.blocksBehind) ? netInfo.blocksBehind : 0
+        blocksBehind:        Number.isFinite(netInfo.blocksBehind) ? netInfo.blocksBehind : 0,
+        daemonUp:            mgr?.jobManager?._daemonUp === true,
+        daemonLastError:     mgr?.jobManager?._daemonLastError || null,
+        daemonLastOkAt:      mgr?.jobManager?._daemonLastOkAt || null
       },
       totalBlocks:      ds.countBlocks(poolId),
-      totalPaid:        ds.totalPaid(poolId),
+      totalPaid:        Math.max(ds.totalPaid(poolId), confirmedRewards),
       blockReward:      coin.blockReward || 0,
       blockRewardNote:  coin.blockRewardNote || '',
       lastPoolBlockTime: null,
@@ -380,16 +416,16 @@ route('GET', '/dashboard/wallet-stats', async (req, res, rp, qp) => {
   const { coinId, coin } = getCoinForPool(poolId);
   if (!coin) return jsonErr(res, 404, 'Pool not found');
   const mgr = managers[coinId];
-  let balance = 0, price = coin.coinPrice || null;
-  try {
-    if (mgr?.jobManager?.rpc) {
-      balance = await mgr.jobManager.rpc.call('getbalance');
-    }
-  } catch (_) {}
+  const price = coin.coinPrice || null;
+  const wallet = await getWalletSnapshot(mgr);
   jsonOk(res, {
     symbol:    coin.symbol,
-    balance,
-    usdValue:  price !== null ? price * balance : null,
+    balance: wallet.spendable,
+    spendable: wallet.spendable,
+    unconfirmed: wallet.unconfirmed,
+    immature: wallet.immature,
+    totalExpected: wallet.totalExpected,
+    usdValue:  price !== null ? price * wallet.totalExpected : null,
     price,
     hiddenAddressCount: 0
   });
@@ -400,27 +436,22 @@ route('GET', '/dashboard/wallet-info', async (req, res, rp, qp) => {
   const { coinId, coin } = getCoinForPool(poolId);
   if (!coin) return jsonErr(res, 404, 'Pool not found');
   const mgr = managers[coinId];
-  let balance = 0, unconfirmed = 0, immature = 0, transactions = [];
-  try {
-    if (mgr?.jobManager?.rpc) {
-      const rpc = mgr.jobManager.rpc;
-      [balance, unconfirmed] = await Promise.all([
-        rpc.call('getbalance').catch(() => 0),
-        rpc.call('getunconfirmedbalance').catch(() => 0)
-      ]);
-      // Immature: sum of coinbase txs not yet matured
-      const ltx = await rpc.call('listtransactions', ['*', 30, 0]).catch(() => []);
-      immature = ltx.filter(t => t.category === 'immature').reduce((s, t) => s + t.amount, 0);
-      transactions = ltx.slice(0, 20).map(t => ({
-        category: t.category,
-        amount: t.amount,
-        address: t.address,
-        confirmations: t.confirmations,
-        time: t.time
-      }));
-    }
-  } catch (_) {}
-  jsonOk(res, { isLocal: true, balance, unconfirmed, immature, transactions });
+  const wallet = await getWalletSnapshot(mgr);
+  const transactions = wallet.recentTransactions.map(t => ({
+    category: t.category,
+    amount: t.amount,
+    address: t.address,
+    confirmations: t.confirmations,
+    time: t.time
+  }));
+  jsonOk(res, {
+    isLocal: true,
+    balance: wallet.spendable,
+    unconfirmed: wallet.unconfirmed,
+    immature: wallet.immature,
+    totalExpected: wallet.totalExpected,
+    transactions
+  });
 });
 
 route('POST', '/dashboard/wallet-send', async (req, res, rp, qp) => {
@@ -445,7 +476,24 @@ route('GET', '/dashboard/shares-rate', (req, res, rp, qp) => {
 });
 
 route('GET', '/dashboard/pending-rewards', (req, res, rp, qp) => {
+  // legacy handler replaced by async version below
   jsonOk(res, ds.pendingRewards(qp.poolId));
+});
+
+route('GET', '/dashboard/pending-rewards-v2', async (req, res, rp, qp) => {
+  const poolId = qp.poolId;
+  const { coinId, coin } = getCoinForPool(poolId);
+  if (!coin) return jsonErr(res, 404, 'Pool not found');
+  const mgr = managers[coinId];
+  const base = ds.pendingRewards(poolId);
+  const wallet = await getWalletSnapshot(mgr);
+  const total = Number(base.total || 0) + Number(wallet.immature || 0);
+  jsonOk(res, {
+    count: base.count,
+    total,
+    chainPending: Number(base.total || 0),
+    immature: Number(wallet.immature || 0)
+  });
 });
 
 route('GET', '/dashboard/pool-balance', async (req, res, rp, qp) => {
@@ -453,13 +501,13 @@ route('GET', '/dashboard/pool-balance', async (req, res, rp, qp) => {
   const { coinId, coin } = getCoinForPool(poolId);
   if (!coin) return jsonErr(res, 404, 'Pool not found');
   const mgr = managers[coinId];
-  let balance = 0;
-  try {
-    if (mgr?.jobManager?.rpc) {
-      balance = await mgr.jobManager.rpc.call('getbalance');
-    }
-  } catch (_) {}
-  jsonOk(res, { balance, breakdown: [] });
+  const wallet = await getWalletSnapshot(mgr);
+  jsonOk(res, {
+    balance: wallet.totalExpected,
+    spendable: wallet.spendable,
+    immature: wallet.immature,
+    breakdown: []
+  });
 });
 
 route('POST', '/dashboard/block-workers', async (req, res, rp, qp) => {

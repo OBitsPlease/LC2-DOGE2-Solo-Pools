@@ -132,6 +132,23 @@ function totalPaid(poolId) {
     .reduce((s, p) => s + (p.amount || 0), 0);
 }
 
+function sumBlockRewards(poolId, { states = null } = {}) {
+  const wanted = Array.isArray(states) && states.length
+    ? new Set(states.map(s => String(s || '').toLowerCase()))
+    : null;
+
+  return read('blocks', [])
+    .filter(b => {
+      if (b.poolId !== poolId) return false;
+      if (!wanted) return true;
+      return wanted.has(String(b.status || '').toLowerCase());
+    })
+    .reduce((sum, b) => {
+      const reward = Number(b.reward || 0);
+      return sum + (Number.isFinite(reward) ? reward : 0);
+    }, 0);
+}
+
 // ─── Performance snapshots ─────────────────────────────────────────────────
 // Stored as circular array, one snapshot per minute, kept 48h = 2880 samples max
 const MAX_PERF_SAMPLES = 2880;
@@ -329,7 +346,7 @@ module.exports = {
   getDataDir: () => DATA_DIR,
   getBlocks, addBlock, updateBlockStatus, getBlockWorkers, countBlocks, pendingRewards,
   getPendingBlocks, updateBlockRecord,
-  getPayments, addPayment, totalPaid,
+  getPayments, addPayment, totalPaid, sumBlockRewards,
   addPerfSnapshot, getPerfSnapshots, getMinerPerfSnapshots,
   addShare, getSharesSince, getSharesRate, getRoundEffort,
   getPoolConfig, setPoolConfig,

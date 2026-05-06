@@ -18,6 +18,7 @@ const StratumServer   = require('./stratum-server');
 const config          = require('./config');
 const dashboardServer = require('./dashboard-server');
 const ds              = require('./data-store');
+const { writeDiagnosticLog } = require('./diagnostic-logger');
 const net             = require('net');
 const os              = require('os');
 const path            = require('path');
@@ -104,6 +105,37 @@ function writeStartupSummary(payload) {
   console.log(`[Startup] Summary written: ${outPath}`);
 }
 
+function writePortChangeAlert(portChanges) {
+  if (!Array.isArray(portChanges) || portChanges.length === 0) return null;
+
+  const runtimeRoot = path.dirname(ds.getDataDir());
+  const alertPath = path.join(runtimeRoot, 'PORT-CHANGE-ALERT.txt');
+  const historyPath = path.join(runtimeRoot, 'logs', 'port-change-history.log');
+
+  const lines = [];
+  lines.push('============================================================');
+  lines.push('  PORT CHANGE ALERT');
+  lines.push('============================================================');
+  lines.push(`Generated: ${new Date().toLocaleString()}`);
+  lines.push('');
+  lines.push('One or more ports were changed because requested ports were busy.');
+  lines.push('Update miner/dashboard targets to the active ports below:');
+  lines.push('');
+  for (const ch of portChanges) {
+    lines.push(`- ${ch.service}: requested ${ch.requestedPort} -> active ${ch.activePort}`);
+  }
+  lines.push('');
+
+  fs.mkdirSync(path.dirname(alertPath), { recursive: true });
+  fs.mkdirSync(path.dirname(historyPath), { recursive: true });
+  fs.writeFileSync(alertPath, lines.join('\n'));
+  fs.appendFileSync(historyPath, `[${new Date().toISOString()}] ${JSON.stringify(portChanges)}\n`);
+
+  writeDiagnosticLog('port-change-alert', { portChanges });
+  console.log(`[ALERT] Port change detected. See ${alertPath}`);
+  return alertPath;
+}
+
 function getLanIpv4Address() {
   const interfaces = os.networkInterfaces();
   for (const addresses of Object.values(interfaces)) {
@@ -116,7 +148,7 @@ function getLanIpv4Address() {
   return '127.0.0.1';
 }
 
-function buildMinerConnectionInfo({ dashboardPort, startupCoins }) {
+function buildMinerConnectionInfo({ dashboardPort, startupCoins, portChanges = [] }) {
   const lanIp = getLanIpv4Address();
   const startedCoins = startupCoins.filter(coin => coin.started);
   const lc2Coin = startedCoins.find(coin => coin.key === 'lc2');
@@ -128,6 +160,15 @@ function buildMinerConnectionInfo({ dashboardPort, startupCoins }) {
   lines.push('  LC2/DOGE2 SOLO MINER - LIVE CONNECTION INFO');
   lines.push('============================================================');
   lines.push('');
+
+  if (portChanges.length > 0) {
+    lines.push('*** PORT CHANGE ALERT ***');
+    for (const ch of portChanges) {
+      lines.push(`- ${ch.service}: requested ${ch.requestedPort} -> active ${ch.activePort}`);
+    }
+    lines.push('');
+  }
+
   lines.push('Type this exact address into miners on the same network:');
   lines.push('');
 
@@ -422,6 +463,7 @@ async function main() {
 
   const running = [];
   const startupCoins = [];
+  const portChanges = [];
 
   for (const { key, cfg } of coins) {
     if (!isCoinEnabledBySelection(key)) {
@@ -450,6 +492,11 @@ async function main() {
     cfg.stratumPort = selectedPort;
     if (selectedPort !== requestedPort) {
       console.log(`[${cfg.symbol}] Port ${requestedPort} is busy. Using ${selectedPort} instead.`);
+      portChanges.push({
+        service: `${cfg.symbol} stratum`,
+        requestedPort,
+        activePort: selectedPort
+      });
     }
 
     try {
@@ -491,6 +538,11 @@ async function main() {
     config.dashboard.port = dashPort;
     if (dashPort !== requestedDashPort) {
       console.log(`[Dashboard] Port ${requestedDashPort} is busy. Using ${dashPort} instead.`);
+      portChanges.push({
+        service: 'Dashboard',
+        requestedPort: requestedDashPort,
+        activePort: dashPort
+      });
     }
   }
 
@@ -507,9 +559,15 @@ async function main() {
 
   const connectionInfoPath = writeMinerConnectionInfo({
     dashboardPort: dashPort,
-    startupCoins
+    startupCoins,
+    portChanges
   });
   openTextDocument(connectionInfoPath);
+
+  const alertPath = writePortChangeAlert(portChanges);
+  if (alertPath) {
+    openTextDocument(alertPath);
+  }
 
   if (running.length === 0) {
     console.error('\nNo coins started. Please edit src/config.js and try again.');

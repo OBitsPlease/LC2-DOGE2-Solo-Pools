@@ -40,6 +40,9 @@ class JobManager extends EventEmitter {
     this._shareCount = 0;
     this._shareWindow = []; // { ts, diff } for hashrate estimation
     this._networkInfo = {};
+    this._daemonUp = false;
+    this._daemonLastError = null;
+    this._daemonLastOkAt = null;
     this._lastTemplate = null;
     // Merge mining: set when this chain is the PARENT (LC2)
     this._auxJobMgr = null;         // DOGE2 JobManager instance
@@ -139,6 +142,17 @@ class JobManager extends EventEmitter {
       }
 
       // Fetch network/sync telemetry for dashboard status.
+      // Use a dedicated unmasked health probe so _daemonUp is reliable.
+      try {
+        await this.rpc.call('getblockcount');
+        this._daemonUp = true;
+        this._daemonLastOkAt = Date.now();
+        this._daemonLastError = null;
+      } catch (healthErr) {
+        this._daemonUp = false;
+        this._daemonLastError = healthErr.message;
+      }
+
       try {
         const [miningInfo, netInfo, chainInfo, directNetworkHashps, directDifficulty] = await Promise.all([
           this.rpc.call('getmininginfo').catch(() => ({})),
@@ -222,6 +236,8 @@ class JobManager extends EventEmitter {
         console.log(`[${this.coin.symbol}] New job ${job.id} (${reason})`);
       }
     } catch (err) {
+      this._daemonUp = false;
+      this._daemonLastError = err.message;
       console.error(`[${this.coin.symbol}] job poll failed: ${err.message}`);
     }
   }
@@ -639,12 +655,13 @@ class JobManager extends EventEmitter {
         writeDiagnosticLog('aux-candidate-hit', {
           parent: this.coin.symbol,
           aux: this._auxJobMgr?.coin?.symbol || 'DOGE2',
+          workerName,
           height: job.auxData?.template?.height || null,
           parentHeight: job.height || null,
           candidates: this._auxCandidates,
           shareDiff: sharesDiff || 1
         });
-        this._submitAuxBlock(job, extraNonce1Hex, extraNonce2Hex, header).catch(err => {
+        this._submitAuxBlock(job, extraNonce1Hex, extraNonce2Hex, header, workerName).catch(err => {
           this._auxErrors++;
           writeDiagnosticLog('aux-submit-exception', {
             aux: this._auxJobMgr?.coin?.symbol || 'DOGE2',
@@ -679,7 +696,7 @@ class JobManager extends EventEmitter {
     return header.toString('hex') + txCount.toString('hex') + coinbaseTxHex + otherTxs;
   }
 
-  async _submitAuxBlock(lc2Job, extraNonce1Hex, extraNonce2Hex, lc2HeaderBytes) {
+  async _submitAuxBlock(lc2Job, extraNonce1Hex, extraNonce2Hex, lc2HeaderBytes, workerName = null) {
     const { buildFullCoinbaseTx } = require('./coinbase-builder');
     
     // CRITICAL: Use the cached auxData from the job, NOT a refreshed template.
@@ -721,19 +738,77 @@ class JobManager extends EventEmitter {
       lc2Job.coinb1, extraNonce1Hex, extraNonce2Hex, lc2Job.coinb2
     );
 
+    // Deep structure sanity checks: prove that the aux header hash we submit
+    // matches the hash committed in the parent coinbase (fabe6d6d + 32-byte hash).
+    const auxHeaderHashHex = computeAuxHash(auxData.headerBytes).toString('hex');
+    const auxHeaderHashHexLE = Buffer.from(auxHeaderHashHex, 'hex').reverse().toString('hex');
+    const mmMagicHex = 'fabe6d6d';
+    const mmPos = parentCoinbaseTxHex.indexOf(mmMagicHex);
+    let committedAuxHashHex = null;
+    let committedAuxHashHexLE = null;
+    let commitmentMatchesBE = false;
+    let commitmentMatchesLE = false;
+    if (mmPos >= 0 && parentCoinbaseTxHex.length >= (mmPos + 8 + 64)) {
+      committedAuxHashHex = parentCoinbaseTxHex.slice(mmPos + 8, mmPos + 8 + 64).toLowerCase();
+      committedAuxHashHexLE = Buffer.from(committedAuxHashHex, 'hex').reverse().toString('hex');
+      commitmentMatchesBE = committedAuxHashHex === auxHeaderHashHex;
+      commitmentMatchesLE = committedAuxHashHex === auxHeaderHashHexLE;
+    }
+
+    const auxHeaderVersionLE = auxData.headerBytes.readInt32LE(0);
+    const auxpowBitSet = (auxHeaderVersionLE & 0x100) !== 0;
+
+    writeDiagnosticLog('aux-submit-structure-check', {
+      aux: this._auxJobMgr?.coin?.symbol || 'DOGE2',
+      workerName,
+      height: auxHeight,
+      auxHeaderHashBE: auxHeaderHashHex,
+      auxHeaderHashLE: auxHeaderHashHexLE,
+      mmCommitFound: mmPos >= 0,
+      committedAuxHashBE: committedAuxHashHex,
+      committedAuxHashLE: committedAuxHashHexLE,
+      commitmentMatchesBE,
+      commitmentMatchesLE,
+      auxHeaderVersionLE: auxHeaderVersionLE >>> 0,
+      auxpowBitSet
+    });
+
     const auxBlockHex = buildAuxPowBlock({
       auxHeaderBytes:       auxData.headerBytes,
       auxCoinbaseTxHex:     auxData.coinbaseTxHex,
       parentCoinbaseTxHex,
       parentMerkleBranches: lc2Job.merkleBranches,
       parentHeaderBytes:    lc2HeaderBytes,
-      auxTemplate:          auxData.template
+      auxTemplate:          auxData.template,
+      parentHashEncoding:   'le'
+    });
+
+    writeDiagnosticLog('aux-submit-raw-hex', {
+      aux: this._auxJobMgr?.coin?.symbol || 'DOGE2',
+      height: auxHeight,
+      lc2HeaderBytesHex: lc2HeaderBytes.toString('hex'),
+      auxHeaderBytesHex: auxData.headerBytes.toString('hex'),
+      parentCoinbaseTxHex: parentCoinbaseTxHex,
+      auxCoinbaseTxHex: auxData.coinbaseTxHex,
+      parentMerkleBranches: lc2Job.merkleBranches,
+      auxBlockHexFirst800: auxBlockHex.slice(0, 800)
+    });
+
+    const auxBlockHexAltHashBE = buildAuxPowBlock({
+      auxHeaderBytes:       auxData.headerBytes,
+      auxCoinbaseTxHex:     auxData.coinbaseTxHex,
+      parentCoinbaseTxHex,
+      parentMerkleBranches: lc2Job.merkleBranches,
+      parentHeaderBytes:    lc2HeaderBytes,
+      auxTemplate:          auxData.template,
+      parentHashEncoding:   'be'
     });
 
     try {
       this._auxSubmits++;
       writeDiagnosticLog('aux-submit-attempt', {
         aux: this._auxJobMgr?.coin?.symbol || 'DOGE2',
+        workerName,
         height: auxHeight,
         submits: this._auxSubmits,
         candidates: this._auxCandidates,
@@ -745,6 +820,7 @@ class JobManager extends EventEmitter {
         this._auxAccepted++;
         writeDiagnosticLog('aux-submit-accepted', {
           aux: this._auxJobMgr?.coin?.symbol || 'DOGE2',
+          workerName,
           height: auxHeight,
           accepted: this._auxAccepted,
           submits: this._auxSubmits,
@@ -761,6 +837,7 @@ class JobManager extends EventEmitter {
         this._auxRejected++;
         writeDiagnosticLog('aux-submit-rejected', {
           aux: this._auxJobMgr?.coin?.symbol || 'DOGE2',
+          workerName,
           height: auxHeight,
           rejected: this._auxRejected,
           submits: this._auxSubmits,
@@ -774,12 +851,65 @@ class JobManager extends EventEmitter {
           meetsAuxTargetBE,
           result: String(result)
         });
+
+        // Retry once with alternate CMerkleTx.hashBlock encoding for forks that
+        // expect parent block hash bytes in BE instead of LE.
+        if (String(result) === 'high-hash') {
+          try {
+            writeDiagnosticLog('aux-submit-retry-attempt', {
+              aux: this._auxJobMgr?.coin?.symbol || 'DOGE2',
+              workerName,
+              height: auxHeight,
+              retry: 'parent-hash-be'
+            });
+
+            const retryResult = await this._auxJobMgr.rpc.call('submitblock', [auxBlockHexAltHashBE]);
+            if (retryResult === null || retryResult === undefined || retryResult === '') {
+              this._auxAccepted++;
+              writeDiagnosticLog('aux-submit-retry-accepted', {
+                aux: this._auxJobMgr?.coin?.symbol || 'DOGE2',
+                workerName,
+                height: auxHeight,
+                accepted: this._auxAccepted,
+                submits: this._auxSubmits,
+                candidates: this._auxCandidates,
+                retry: 'parent-hash-be'
+              });
+              console.log(`[DOGE2] 🎉 AuxPoW block ACCEPTED on retry at height ${auxHeight} (parent-hash-be)!`);
+              this.emit('auxBlockFound', {
+                coin: 'DOGE2',
+                height: auxHeight,
+                blockHex: auxBlockHexAltHashBE,
+                hashHex: null
+              });
+              return;
+            }
+
+            writeDiagnosticLog('aux-submit-retry-rejected', {
+              aux: this._auxJobMgr?.coin?.symbol || 'DOGE2',
+              workerName,
+              height: auxHeight,
+              retry: 'parent-hash-be',
+              result: String(retryResult)
+            });
+          } catch (retryErr) {
+            writeDiagnosticLog('aux-submit-retry-rpc-error', {
+              aux: this._auxJobMgr?.coin?.symbol || 'DOGE2',
+              workerName,
+              height: auxHeight,
+              retry: 'parent-hash-be',
+              error: retryErr.message
+            });
+          }
+        }
+
         console.error(`[DOGE2] Block rejected (height ${auxHeight}): ${result}`);
       }
     } catch (err) {
       this._auxErrors++;
       writeDiagnosticLog('aux-submit-rpc-error', {
         aux: this._auxJobMgr?.coin?.symbol || 'DOGE2',
+        workerName,
         height: auxHeight,
         errors: this._auxErrors,
         submits: this._auxSubmits,

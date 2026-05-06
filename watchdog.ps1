@@ -269,7 +269,7 @@ function Write-Doge2Config {
             "rpcuser=$Doge2RpcUser",
             "rpcpassword=$Doge2RpcPass",
             'rpcallowip=127.0.0.1',
-            'printtoconsole=1',
+            'debug=auxpow',
             'dnsseed=1',
             'discover=1',
             'listen=1',
@@ -939,8 +939,7 @@ function Start-Doge2Daemon {
         "-rpcport=$Doge2RpcPort",
         "-rpcuser=$Doge2RpcUser",
         "-rpcpassword=$Doge2RpcPass",
-        '-rpcallowip=127.0.0.1',
-        '-printtoconsole=1'
+        '-rpcallowip=127.0.0.1'
     )
     $outReady = Ensure-LogFile $Doge2Out
     $errReady = Ensure-LogFile $Doge2Err
@@ -1022,52 +1021,51 @@ function Start-Proxy([string]$reason = 'unspecified') {
     $launchFile = $null
     $launchArgs = ''
 
-    if (Test-Path $ProxyExe) {
-        $launchFile = $ProxyExe
-    } else {
-        $nodeExe = Resolve-NodeExePath
-        if (-not $nodeExe) {
-            throw 'Cannot start proxy: no packaged exe found and Node.js is not installed.'
-        }
+    $nodeExe = Resolve-NodeExePath
+    $sourceEntry = Join-Path $ProxyDir 'src/index.js'
+
+    # Prefer source entry when available so local hotfixes are effective
+    # without requiring a new packaged exe build.
+    if ($nodeExe -and (Test-Path $sourceEntry)) {
         $launchFile = $nodeExe
         $launchArgs = 'src/index.js'
+    } elseif (Test-Path $ProxyExe) {
+        $launchFile = $ProxyExe
+    } else {
+        throw 'Cannot start proxy: no packaged exe found and Node.js source runtime is unavailable.'
     }
 
-    $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName               = $launchFile
-    $psi.Arguments              = $launchArgs
-    $psi.WorkingDirectory       = $ProxyDir
-    $psi.UseShellExecute        = $false
-    $psi.CreateNoWindow         = $true
-    $psi.RedirectStandardOutput = $true
-    $psi.RedirectStandardError  = $true
-    $psi.EnvironmentVariables['DAEMON_ENABLE_LC2'] = if ($EnableLC2) { '1' } else { '0' }
-    $psi.EnvironmentVariables['DAEMON_ENABLE_DOGE2'] = if ($EnableDOGE2) { '1' } else { '0' }
+    $prevEnableLc2 = $env:DAEMON_ENABLE_LC2
+    $prevEnableDoge2 = $env:DAEMON_ENABLE_DOGE2
+    $env:DAEMON_ENABLE_LC2 = if ($EnableLC2) { '1' } else { '0' }
+    $env:DAEMON_ENABLE_DOGE2 = if ($EnableDOGE2) { '1' } else { '0' }
 
-    $proc = [System.Diagnostics.Process]::new()
-    $proc.StartInfo = $psi
-    $proc.Start() | Out-Null
+    $proc = $null
+    try {
+        $proc = Start-Process -FilePath $launchFile `
+            -ArgumentList $launchArgs `
+            -WorkingDirectory $ProxyDir `
+            -WindowStyle Hidden `
+            -RedirectStandardOutput $ProxyOut `
+            -RedirectStandardError $ProxyErr `
+            -PassThru
+    } finally {
+        $env:DAEMON_ENABLE_LC2 = $prevEnableLc2
+        $env:DAEMON_ENABLE_DOGE2 = $prevEnableDoge2
+    }
 
-    # Pipe stdout/stderr to log files without blocking the watchdog
-    $outWriter = [System.IO.StreamWriter]::new($ProxyOut, $true, [System.Text.Encoding]::UTF8)
-    $outWriter.AutoFlush = $true
-    $errWriter = [System.IO.StreamWriter]::new($ProxyErr, $true, [System.Text.Encoding]::UTF8)
-    $errWriter.AutoFlush = $true
-
-    Register-ObjectEvent -InputObject $proc -EventName 'OutputDataReceived' -Action {
-        if ($null -ne $Event.SourceEventArgs.Data) {
-            $outWriter.WriteLine($Event.SourceEventArgs.Data)
+    Start-Sleep 2
+    if ($proc -and $proc.HasExited) {
+        Write-Log "ERROR: Proxy exited immediately with code $($proc.ExitCode)."
+        if (Test-Path $ProxyErr) {
+            $tail = (Get-Content -Path $ProxyErr -Tail 20 -ErrorAction SilentlyContinue) -join ' | '
+            if ($tail) { Write-Log "Proxy stderr tail: $tail" }
         }
-    } | Out-Null
-
-    Register-ObjectEvent -InputObject $proc -EventName 'ErrorDataReceived' -Action {
-        if ($null -ne $Event.SourceEventArgs.Data) {
-            $errWriter.WriteLine($Event.SourceEventArgs.Data)
+        if (Test-Path $ProxyOut) {
+            $tail = (Get-Content -Path $ProxyOut -Tail 20 -ErrorAction SilentlyContinue) -join ' | '
+            if ($tail) { Write-Log "Proxy stdout tail: $tail" }
         }
-    } | Out-Null
-
-    $proc.BeginOutputReadLine()
-    $proc.BeginErrorReadLine()
+    }
 
     # Wait for startup-summary.json to appear and report the selected ports (max 30s)
     $tries = 0

@@ -833,7 +833,10 @@ async function loadPoolStats() {
         if (hApi) { hApi.textContent = '✓ Online'; hApi.className = 'health-val health-ok'; }
         const hNode = document.getElementById('h-node');
         if (hNode) {
-          if (blockHeight <= 0) {
+          if (!ns.daemonUp) {
+            hNode.textContent = '✗ Daemon Offline';
+            hNode.className = 'health-val health-err';
+          } else if (blockHeight <= 0) {
             hNode.textContent = '✗ No chain data';
             hNode.className = 'health-val health-err';
           } else if (ibd || behind > 0 || verification < 0.999) {
@@ -848,7 +851,13 @@ async function loadPoolStats() {
         const poolStatus = document.getElementById('pool-status');
         if (poolStatus) poolStatus.innerHTML = '<span class="status-dot"></span>Online';
         const nodeStatus = document.getElementById('node-status');
-        if (nodeStatus) nodeStatus.innerHTML = '<span class="status-dot"></span>Connected';
+        if (nodeStatus) {
+          if (!ns.daemonUp) {
+            nodeStatus.innerHTML = '<span class="status-dot red"></span>Daemon Offline';
+          } else {
+            nodeStatus.innerHTML = '<span class="status-dot"></span>Connected';
+          }
+        }
 
         document.getElementById('last-refresh').textContent = 'Updated ' + new Date().toLocaleTimeString();
     } catch(e) {
@@ -1227,10 +1236,13 @@ async function loadWalletStats() {
         walletStatsCache = d;
         const sym = d.symbol || POOL_SYMBOL;
         setEl('zcl-price', d.price !== null ? `$${d.price?.toFixed(4)||'–'}` : '–');
-        setEl('wallet-balance', d.balance !== null ? `${d.balance.toFixed(4)} ${sym}` : '–');
-        setEl('wallet-usd', d.usdValue !== null ? `$${d.usdValue?.toLocaleString()||'–'} USD` : '– USD');
+    const totalExpected = Number.isFinite(Number(d.totalExpected)) ? Number(d.totalExpected) : Number(d.balance || 0);
+    const spendable = Number.isFinite(Number(d.spendable)) ? Number(d.spendable) : Number(d.balance || 0);
+    const immature = Number.isFinite(Number(d.immature)) ? Number(d.immature) : 0;
+    setEl('wallet-balance', `${totalExpected.toFixed(4)} ${sym}`);
+    setEl('wallet-usd', d.usdValue !== null ? `$${d.usdValue?.toLocaleString()||'–'} USD` : '– USD');
         const bd = document.getElementById('wallet-breakdown');
-        if (bd) bd.innerHTML = '&nbsp;';
+    if (bd) bd.textContent = `spendable ${spendable.toFixed(4)} + immature ${immature.toFixed(4)} ${sym}`;
         updateSendDestinationHint();
     } catch(_) {}
 }
@@ -1242,7 +1254,7 @@ function updateSendDestinationHint() {
     const addr = (addrEl.value || '').trim();
     const stats = walletStatsCache || {};
     const sym = stats.symbol || POOL_SYMBOL;
-    const bal = Number(stats.balance || 0);
+    const bal = Number(stats.spendable || stats.balance || 0);
     if (!addr) { hintEl.textContent = 'Type an address to detect destination type'; hintEl.style.color='var(--muted)'; return; }
 
     // LC2: addresses start with 'L' (P2PKH version=48)
@@ -1287,15 +1299,18 @@ async function loadSharesRate() {
 // ─── PENDING BLOCK REWARDS ─────────────────────────────────────────────────
 async function loadPendingRewards() {
     try {
-        const d = await fetch(`/dashboard/pending-rewards?poolId=${POOL_ID}`).then(r => r.json());
+    const d = await fetch(`/dashboard/pending-rewards-v2?poolId=${POOL_ID}`).then(r => r.json());
         const el  = document.getElementById('pending-rewards');
         const sub = document.getElementById('pending-rewards-sub');
-        if (d.count === 0) {
-            el.textContent  = '0.0000 ' + POOL_SYMBOL;
-            sub.textContent = 'no blocks maturing';
+    const total = Number(d.total || 0);
+    const immature = Number(d.immature || 0);
+    const chainPending = Number(d.chainPending || 0);
+    if (total <= 0) {
+      el.textContent  = '0.0000 ' + POOL_SYMBOL;
+      sub.textContent = 'no blocks maturing';
         } else {
-            el.textContent  = d.total.toFixed(4) + ' ' + POOL_SYMBOL;
-            sub.textContent = d.count + ' block' + (d.count > 1 ? 's' : '') + ' maturing';
+      el.textContent  = total.toFixed(4) + ' ' + POOL_SYMBOL;
+      sub.textContent = `immature ${immature.toFixed(4)} + pending ${chainPending.toFixed(4)}`;
         }
     } catch(_) {}
 }
@@ -1307,7 +1322,7 @@ async function loadPoolBalance() {
             fetch(`/dashboard/pool-balance?poolId=${POOL_ID}`).then(r => r.json()),
             fetch(`/dashboard/wallet-stats?poolId=${POOL_ID}`).then(r => r.json()).catch(() => ({}))
         ]);
-        const b = bal.balance || 0;
+        const b = Number(bal.balance || 0);
         setEl('pool-balance', b.toFixed(4) + ' ' + POOL_SYMBOL);
         const usd = (price.price && b) ? '$'+(price.price*b).toFixed(2)+' USD' : '– USD';
         setEl('pool-balance-usd', usd);

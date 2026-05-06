@@ -11,10 +11,8 @@
  * Byte-order conventions used here:
  *   - Node.js dsha256() returns bytes MSB-first (standard SHA256 output order)
  *   - Bitcoin wire format for 256-bit hashes: LE (LSB-first, reversed from display)
- *   - Merged mining coinbase commitment stores the aux hash MSB-first.
- *     Why: C++ AuxPoW code copies uint256 (LE, LSB-first) to a vector,
- *     then calls std::reverse → result is MSB-first. That MSB-first value
- *     is what's stored in (and searched for in) the parent coinbase.
+ *   - Merged mining coinbase commitment stores the aux chain merkle root bytes
+ *     in LE order to match DOGE2 AuxPoW validator lookup in parent coinbase.
  *   - CMerkleTx.hashBlock on wire: LE (like all uint256 in wire format)
  *
  * Reference: https://en.bitcoin.it/wiki/Merged_mining_specification
@@ -58,14 +56,15 @@ function computeAuxHash(auxHeaderBytes) {
  *
  * Format:
  *   0xfabe6d6d  (4 bytes)   magic
- *   aux_hash    (32 bytes)  SHA256d of DOGE2 header, MSB-first
+ *   aux_hash    (32 bytes)  SHA256d of DOGE2 header, LE bytes
  *   chain_count (4 bytes)   = 1 (LE int32)
  *   nonce       (4 bytes)   = 0 (LE int32)
  */
 function buildMergedMiningCommitment(auxHash) {
+  const auxHashLE = Buffer.from(auxHash).reverse();
   return Buffer.concat([
     MERGED_MINING_MAGIC,
-    auxHash,           // 32 bytes MSB-first
+    auxHashLE,         // 32 bytes LE
     writeInt32LE(1),   // 1 aux chain
     writeInt32LE(0)    // nonce = 0
   ]);
@@ -96,10 +95,14 @@ function buildAuxPowBlock({
   parentCoinbaseTxHex,   // string: complete LC2 coinbase tx hex
   parentMerkleBranches,  // string[]: LC2 merkle branches (coinbase merkle proof)
   parentHeaderBytes,     // Buffer: 80-byte LC2 block header
-  auxTemplate            // object: DOGE2 getblocktemplate (for transaction data)
+  auxTemplate,           // object: DOGE2 getblocktemplate (for transaction data)
+  parentHashEncoding = 'le' // 'le' (default) or 'be' for CMerkleTx.hashBlock
 }) {
-  // hashBlock = LC2 block hash in wire (LE) format
-  const parentBlockHash = Buffer.from(dsha256(parentHeaderBytes)).reverse();
+  const parentHashBE = Buffer.from(dsha256(parentHeaderBytes));
+  // CMerkleTx.hashBlock fallback mode: some AuxPoW forks expect BE bytes here.
+  const parentBlockHash = parentHashEncoding === 'be'
+    ? parentHashBE
+    : Buffer.from(parentHashBE).reverse();
 
   // CMerkleTx: [parent_coinbase_tx][block_hash][merkle_branch][nIndex]
   const cMerkleTx = Buffer.concat([
