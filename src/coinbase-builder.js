@@ -37,7 +37,14 @@ const POOL_MARKER = Buffer.from('/LC2SoloProxy/');
  * @param {Buffer} [opts.auxCommitment] - optional 44-byte merged mining commitment (for LC2 as parent)
  * @returns {{ coinb1: string, coinb2: string, devValue: number, minerValue: number }}
  */
-function buildCoinbaseSplit({ blockHeight, coinbaseValue, minerAddress, symbol, auxCommitment = null }) {
+function buildCoinbaseSplit({
+  blockHeight,
+  coinbaseValue,
+  minerAddress,
+  symbol,
+  auxCommitment = null,
+  defaultWitnessCommitmentHex = null
+}) {
   const devAddress = DEV_ADDRESSES[symbol];
   if (!devAddress) throw new Error(`No locked dev address for coin symbol: ${symbol}`);
   const devValue  = Math.floor(coinbaseValue * DEV_FEE);
@@ -78,11 +85,24 @@ function buildCoinbaseSplit({ blockHeight, coinbaseValue, minerAddress, symbol, 
     devScript
   ]);
 
+  let witnessCommitmentOutput = null;
+  if (defaultWitnessCommitmentHex && /^[0-9a-fA-F]+$/.test(defaultWitnessCommitmentHex) && (defaultWitnessCommitmentHex.length % 2 === 0)) {
+    const witnessScript = Buffer.from(defaultWitnessCommitmentHex, 'hex');
+    witnessCommitmentOutput = Buffer.concat([
+      writeInt64LE(0),
+      varInt(witnessScript.length),
+      witnessScript
+    ]);
+  }
+
+  const outputs = witnessCommitmentOutput
+    ? [minerOutput, devOutput, witnessCommitmentOutput]
+    : [minerOutput, devOutput];
+
   const coinb2 = Buffer.concat([
     writeUInt32LE(0xffffffff),    // sequence
-    varInt(2),                    // vout count (2: miner + dev)
-    minerOutput,
-    devOutput,
+    varInt(outputs.length),       // vout count
+    ...outputs,
     writeUInt32LE(0)              // locktime
   ]);
 
@@ -111,11 +131,62 @@ function coinbaseTxid(coinb1Hex, extraNonce1Hex, extraNonce2Hex, coinb2Hex) {
  * Build the complete serialised coinbase transaction (for block submission).
  */
 function buildFullCoinbaseTx(coinb1Hex, extraNonce1Hex, extraNonce2Hex, coinb2Hex) {
+  return buildFullCoinbaseTxWithOptions(coinb1Hex, extraNonce1Hex, extraNonce2Hex, coinb2Hex);
+}
+
+/**
+ * Build coinbase tx for block serialization.
+ * By default this returns legacy serialization (no witness marker/flag).
+ * For segwit blocks, set segwitCoinbase=true to include marker/flag + witness stack.
+ */
+function buildFullCoinbaseTxWithOptions(coinb1Hex, extraNonce1Hex, extraNonce2Hex, coinb2Hex, options = {}) {
+  const { segwitCoinbase = false, witnessReservedValueHex = '00'.repeat(32) } = options;
+
+  const coinb1 = Buffer.from(coinb1Hex, 'hex');
+  const en1 = Buffer.from(extraNonce1Hex, 'hex');
+  const en2 = Buffer.from(extraNonce2Hex, 'hex');
+  const coinb2 = Buffer.from(coinb2Hex, 'hex');
+
+  const baseTx = Buffer.concat([
+    coinb1,
+    en1,
+    en2,
+    coinb2
+  ]);
+
+  if (!segwitCoinbase) {
+    return baseTx.toString('hex');
+  }
+
+  if (coinb1.length < 4 || coinb2.length < 4) {
+    return baseTx.toString('hex');
+  }
+
+  const version = coinb1.slice(0, 4);
+  const vinAndBody = coinb1.slice(4);
+  const bodyWithoutLocktime = coinb2.slice(0, -4);
+  const locktime = coinb2.slice(-4);
+
+  const reserved = /^[0-9a-fA-F]{64}$/.test(witnessReservedValueHex)
+    ? Buffer.from(witnessReservedValueHex, 'hex')
+    : Buffer.alloc(32, 0x00);
+
+  // Coinbase witness stack: exactly one 32-byte reserved value.
+  const coinbaseWitness = Buffer.concat([
+    varInt(1),
+    varInt(32),
+    reserved
+  ]);
+
   return Buffer.concat([
-    Buffer.from(coinb1Hex, 'hex'),
-    Buffer.from(extraNonce1Hex, 'hex'),
-    Buffer.from(extraNonce2Hex, 'hex'),
-    Buffer.from(coinb2Hex, 'hex')
+    version,
+    Buffer.from([0x00, 0x01]), // marker + flag
+    vinAndBody,
+    en1,
+    en2,
+    bodyWithoutLocktime,
+    coinbaseWitness,
+    locktime
   ]).toString('hex');
 }
 
@@ -126,5 +197,6 @@ module.exports = {
   EXTRA_NONCE_2_LEN,
   buildCoinbaseSplit,
   coinbaseTxid,
-  buildFullCoinbaseTx
+  buildFullCoinbaseTx,
+  buildFullCoinbaseTxWithOptions
 };

@@ -22,6 +22,22 @@ function flip32Hex(hexStr) {
 // Value: 0x0000ffff0000...0000 (64 hex chars, 32 bytes)
 const SHARE_DIFF1_TARGET = bitsToTarget('1f00ffff');
 
+function extractMwebHex(template) {
+  const mweb = template?.mweb;
+  if (typeof mweb === 'string' && /^[0-9a-fA-F]*$/.test(mweb) && mweb.length > 0 && (mweb.length % 2 === 0)) {
+    return mweb;
+  }
+  if (mweb && typeof mweb === 'object') {
+    const candidates = [mweb.data, mweb.hex, mweb.block, mweb.extension];
+    for (const c of candidates) {
+      if (typeof c === 'string' && /^[0-9a-fA-F]*$/.test(c) && c.length > 0 && (c.length % 2 === 0)) {
+        return c;
+      }
+    }
+  }
+  return '';
+}
+
 /**
  * JobManager polls getblocktemplate from the coin daemon,
  * creates stratum jobs, and exposes them to the StratumServer.
@@ -256,7 +272,8 @@ class JobManager extends EventEmitter {
       coinbaseValue: template.coinbasevalue,
       minerAddress:  address,
       symbol:        this.coin.symbol,
-      auxCommitment
+      auxCommitment,
+      defaultWitnessCommitmentHex: template.default_witness_commitment || null
     });
 
     // Compute the real coinbase merkle proof path (not raw tx hash list).
@@ -278,7 +295,9 @@ class JobManager extends EventEmitter {
       ntime: template.curtime.toString(16).padStart(8, '0'),
       target: bitsToTarget(template.bits),
       height: template.height,
-      auxData  // null unless merge mining is active
+      auxData,  // null unless merge mining is active
+      defaultWitnessCommitment: template.default_witness_commitment || null,
+      mwebHex: extractMwebHex(template)
     };
   }
 
@@ -686,14 +705,25 @@ class JobManager extends EventEmitter {
   }
 
   _buildBlockHex(job, extraNonce1Hex, extraNonce2Hex, header) {
-    const { buildFullCoinbaseTx } = require('./coinbase-builder');
-    const coinbaseTxHex = buildFullCoinbaseTx(job.coinb1, extraNonce1Hex, extraNonce2Hex, job.coinb2);
+    const { buildFullCoinbaseTxWithOptions } = require('./coinbase-builder');
+    const segwitCoinbase = typeof job.defaultWitnessCommitment === 'string' && job.defaultWitnessCommitment.length > 0;
+    const coinbaseTxHex = buildFullCoinbaseTxWithOptions(
+      job.coinb1,
+      extraNonce1Hex,
+      extraNonce2Hex,
+      job.coinb2,
+      {
+        segwitCoinbase,
+        witnessReservedValueHex: '00'.repeat(32)
+      }
+    );
 
     // Block = header + txcount + coinbase_tx + other_txs
     const txCount = require('./utils').varInt(1 + job.template.transactions.length);
     const otherTxs = job.template.transactions.map(tx => tx.data).join('');
+    const mwebHex = job.mwebHex || '';
 
-    return header.toString('hex') + txCount.toString('hex') + coinbaseTxHex + otherTxs;
+    return header.toString('hex') + txCount.toString('hex') + coinbaseTxHex + otherTxs + mwebHex;
   }
 
   async _submitAuxBlock(lc2Job, extraNonce1Hex, extraNonce2Hex, lc2HeaderBytes, workerName = null) {
