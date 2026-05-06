@@ -70,6 +70,7 @@ $Lc2Err      = Join-Path $RuntimeLogDir 'lc2-err.log'
 $Doge2Out    = Join-Path $RuntimeLogDir 'doge2-out.log'
 $Doge2Err    = Join-Path $RuntimeLogDir 'doge2-err.log'
 $StartupSummaryPath = Join-Path $RuntimeRoot 'data\startup-summary.json'
+$ProjectSummaryPath = Join-Path $ProxyDir 'data\startup-summary.json'
 $StatusPath = Join-Path $RuntimeRoot 'RUNTIME-STATUS.txt'
 $DaemonSelectionPath = Join-Path $RuntimeRoot 'data\daemon-selection.json'
 $StopAllRequestPath = Join-Path $RuntimeRoot 'data\stop-all-request.json'
@@ -677,15 +678,34 @@ function Test-PortListening($port) {
 }
 
 function Get-StartupSummary {
-    if (-not (Test-Path $StartupSummaryPath)) {
+    $candidates = @()
+    foreach ($p in @($StartupSummaryPath, $ProjectSummaryPath)) {
+        if ($p -and (Test-Path $p)) {
+            $candidates += $p
+        }
+    }
+
+    if ($candidates.Count -eq 0) {
         return $null
     }
 
-    try {
-        return Get-Content -Raw -Path $StartupSummaryPath | ConvertFrom-Json
-    } catch {
-        return $null
+    $ordered = @(
+        $candidates |
+            Sort-Object { (Get-Item -Path $_ -ErrorAction SilentlyContinue).LastWriteTime } -Descending
+    )
+
+    foreach ($path in $ordered) {
+        try {
+            $parsed = Get-Content -Raw -Path $path | ConvertFrom-Json
+            if ($parsed) {
+                return $parsed
+            }
+        } catch {
+            # Try the next candidate summary path.
+        }
     }
+
+    return $null
 }
 
 function Get-ManagedProcesses([string[]]$processNames, [string[]]$pathHints = @(), [string[]]$commandLineHints = @()) {
@@ -1040,7 +1060,20 @@ function Start-Proxy([string]$reason = 'unspecified') {
     $env:DAEMON_ENABLE_LC2 = if ($EnableLC2) { '1' } else { '0' }
     $env:DAEMON_ENABLE_DOGE2 = if ($EnableDOGE2) { '1' } else { '0' }
 
+    # Rotate log files so a locked handle from a previous run doesn't block Start-Process
+    foreach ($logFile in @($ProxyOut, $ProxyErr)) {
+        try {
+            if (Test-Path $logFile) {
+                $rotated = $logFile -replace '\.log$', '.previous.log'
+                Move-Item -Path $logFile -Destination $rotated -Force -ErrorAction SilentlyContinue
+            }
+            # Pre-create the file so the redirect handle is valid even if node writes nothing initially
+            New-Item -ItemType File -Path $logFile -Force -ErrorAction SilentlyContinue | Out-Null
+        } catch {}
+    }
+
     $proc = $null
+    $startErr = $null
     try {
         $proc = Start-Process -FilePath $launchFile `
             -ArgumentList $launchArgs `
@@ -1048,10 +1081,19 @@ function Start-Proxy([string]$reason = 'unspecified') {
             -WindowStyle Hidden `
             -RedirectStandardOutput $ProxyOut `
             -RedirectStandardError $ProxyErr `
-            -PassThru
+            -PassThru `
+            -ErrorAction Stop
+    } catch {
+        $startErr = $_.Exception.Message
+        Write-Log "ERROR: Start-Process for proxy threw: $startErr"
     } finally {
         $env:DAEMON_ENABLE_LC2 = $prevEnableLc2
         $env:DAEMON_ENABLE_DOGE2 = $prevEnableDoge2
+    }
+
+    if (-not $proc) {
+        Write-Log "ERROR: Proxy process object is null after Start-Process. launchFile=$launchFile"
+        return
     }
 
     Start-Sleep 2
