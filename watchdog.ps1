@@ -879,14 +879,15 @@ function Get-RecoveredCoinSummaryGaps($lc2RpcOk, $doge2RpcOk) {
 }
 
 function Resolve-NodeExePath {
-    $candidates = @(
+    # Use Select-Object -First 1 to avoid the PowerShell scalar-vs-array gotcha:
+    # if Where-Object returns exactly one item it's a string, and indexing [0] on a
+    # string returns the first CHARACTER ('C'), not the full path.
+    $found = @(
         "$env:ProgramFiles\nodejs\node.exe",
-        "$env:ProgramFiles(x86)\nodejs\node.exe"
-    ) | Where-Object { $_ -and (Test-Path $_) }
+        "${env:ProgramFiles(x86)}\nodejs\node.exe"
+    ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
 
-    if ($candidates.Count -gt 0) {
-        return $candidates[0]
-    }
+    if ($found) { return $found }
 
     $nodeCmd = Get-Command node -ErrorAction SilentlyContinue
     if ($nodeCmd) { return $nodeCmd.Source }
@@ -1061,16 +1062,24 @@ function Start-Proxy([string]$reason = 'unspecified') {
     $env:DAEMON_ENABLE_DOGE2 = if ($EnableDOGE2) { '1' } else { '0' }
 
     # Rotate log files so a locked handle from a previous run doesn't block Start-Process
-    foreach ($logFile in @($ProxyOut, $ProxyErr)) {
+    # NOTE: loop variable must NOT be named $logFile — that name collides with $LogFile (PowerShell
+    # variable lookup is case-insensitive) and would cause Write-Log to write to the wrong file.
+    foreach ($rotLogFile in @($ProxyOut, $ProxyErr)) {
         try {
-            if (Test-Path $logFile) {
-                $rotated = $logFile -replace '\.log$', '.previous.log'
-                Move-Item -Path $logFile -Destination $rotated -Force -ErrorAction SilentlyContinue
+            if (Test-Path $rotLogFile) {
+                $rotated = $rotLogFile -replace '\.log$', '.previous.log'
+                Move-Item -Path $rotLogFile -Destination $rotated -Force -ErrorAction SilentlyContinue
             }
-            # Pre-create the file so the redirect handle is valid even if node writes nothing initially
-            New-Item -ItemType File -Path $logFile -Force -ErrorAction SilentlyContinue | Out-Null
+            # Ensure log directory exists, then pre-create the file
+            $rotLogDir = [System.IO.Path]::GetDirectoryName($rotLogFile)
+            if ($rotLogDir -and -not (Test-Path $rotLogDir)) {
+                New-Item -ItemType Directory -Path $rotLogDir -Force | Out-Null
+            }
+            New-Item -ItemType File -Path $rotLogFile -Force -ErrorAction SilentlyContinue | Out-Null
         } catch {}
     }
+
+    Write-Log "DEBUG: launch launchFile='$launchFile' args='$launchArgs' workdir='$ProxyDir' out='$ProxyOut' err='$ProxyErr'"
 
     $proc = $null
     $startErr = $null
@@ -1092,7 +1101,7 @@ function Start-Proxy([string]$reason = 'unspecified') {
     }
 
     if (-not $proc) {
-        Write-Log "ERROR: Proxy process object is null after Start-Process. launchFile=$launchFile"
+        Write-Log "ERROR: Proxy process object is null. launchFile='$launchFile' args='$launchArgs'"
         return
     }
 
