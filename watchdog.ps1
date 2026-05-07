@@ -1079,8 +1079,6 @@ function Start-Proxy([string]$reason = 'unspecified') {
         } catch {}
     }
 
-    Write-Log "DEBUG: launch launchFile='$launchFile' args='$launchArgs' workdir='$ProxyDir' out='$ProxyOut' err='$ProxyErr'"
-
     $proc = $null
     $startErr = $null
     try {
