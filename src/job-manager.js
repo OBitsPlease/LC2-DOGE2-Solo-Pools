@@ -23,19 +23,57 @@ function flip32Hex(hexStr) {
 const SHARE_DIFF1_TARGET = bitsToTarget('1f00ffff');
 
 function extractMwebHex(template) {
-  const mweb = template?.mweb;
-  if (typeof mweb === 'string' && /^[0-9a-fA-F]*$/.test(mweb) && mweb.length > 0 && (mweb.length % 2 === 0)) {
-    return mweb;
-  }
-  if (mweb && typeof mweb === 'object') {
-    const candidates = [mweb.data, mweb.hex, mweb.block, mweb.extension];
-    for (const c of candidates) {
-      if (typeof c === 'string' && /^[0-9a-fA-F]*$/.test(c) && c.length > 0 && (c.length % 2 === 0)) {
-        return c;
-      }
+  const isHexBytes = (value) => (
+    typeof value === 'string' &&
+    value.length > 0 &&
+    (value.length % 2) === 0 &&
+    /^[0-9a-fA-F]+$/.test(value)
+  );
+
+  const pickBestHex = (candidates) => {
+    const unique = [...new Set(candidates.filter(isHexBytes))];
+    if (!unique.length) return '';
+    // Prefer the longest payload. Hash-like fields are typically 64 hex chars,
+    // while serialized MWEB extension data is much longer.
+    unique.sort((a, b) => b.length - a.length);
+    return unique[0];
+  };
+
+  const collectHexStringsDeep = (obj, out = [], depth = 0) => {
+    if (!obj || depth > 5) return out;
+    if (typeof obj === 'string') {
+      if (isHexBytes(obj)) out.push(obj);
+      return out;
     }
-  }
-  return '';
+    if (Array.isArray(obj)) {
+      for (const item of obj) collectHexStringsDeep(item, out, depth + 1);
+      return out;
+    }
+    if (typeof obj === 'object') {
+      for (const value of Object.values(obj)) collectHexStringsDeep(value, out, depth + 1);
+    }
+    return out;
+  };
+
+  // Known daemon field shapes first.
+  const directCandidates = [
+    template?.mweb,
+    template?.mwebhex,
+    template?.mweb_extension,
+    template?.mweb?.data,
+    template?.mweb?.hex,
+    template?.mweb?.block,
+    template?.mweb?.extension,
+    template?.mweb?.payload,
+    template?.mweb?.serialized,
+    template?.mweb?.bytes
+  ];
+
+  const direct = pickBestHex(directCandidates);
+  if (direct) return direct;
+
+  // Last-resort deep scan for wallet/daemon variants that nest mweb payloads.
+  return pickBestHex(collectHexStringsDeep(template?.mweb || null));
 }
 
 /**
@@ -721,7 +759,19 @@ class JobManager extends EventEmitter {
     // Block = header + txcount + coinbase_tx + other_txs + mweb extension
     const txCount = require('./utils').varInt(1 + job.template.transactions.length);
     const otherTxs = job.template.transactions.map(tx => tx.data).join('');
-    const mwebHex = job.mwebHex || '';
+    // Re-extract from template at submit time for maximum compatibility with
+    // daemon variants; fall back to cached job.mwebHex.
+    const mwebHex = extractMwebHex(job.template) || job.mwebHex || '';
+
+    if (this.coin.symbol === 'LC2' && !mwebHex) {
+      writeDiagnosticLog('mweb-template-empty', {
+        symbol: this.coin.symbol,
+        height: job.height,
+        jobId: job.id,
+        hasTemplateMweb: job.template && Object.prototype.hasOwnProperty.call(job.template, 'mweb'),
+        templateKeys: job.template ? Object.keys(job.template).slice(0, 60) : []
+      });
+    }
 
     console.log(`[${this.coin.symbol}] _buildBlockHex: height=${job.height} segwit=${segwitCoinbase} mwebHex.len=${mwebHex.length} mwebHex.preview=${mwebHex.slice(0, 20) || '(empty)'}`);
 
