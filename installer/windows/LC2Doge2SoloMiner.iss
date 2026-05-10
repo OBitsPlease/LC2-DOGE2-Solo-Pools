@@ -85,3 +85,4 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{sys}\WindowsPowerShell\v1.0\powers
 
 [Run]
 Filename: "{sys}\WindowsPowerShell\v1.0\powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\bin\windows\start-miner-stack-{#AppVersion}.ps1"" -OpenDashboard -OpenInfoFile"; Description: "Start miner stack now"; Flags: nowait postinstall skipifsilent runhidden
+Filename: "{app}\TESTER-MINING-SETUP.txt"; Description: "Open first-run setup and troubleshooting guide (recommended)"; Flags: postinstall shellexec skipifsilent unchecked

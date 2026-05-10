@@ -22,6 +22,24 @@ IMPORTANT:
 If these ports are busy, the app auto-selects fallback ports.
 Always check MINER-CONNECTION-INFO.txt for the live endpoints in use.
 
+FIRST-RUN STARTUP RULE:
+Start the app from the Desktop icon or Start Menu shortcut named "LC2 DOGE2 Solo Miner".
+Do NOT launch dist\lc2-solo-proxy-windows.exe by itself unless the LC2 and DOGE2 daemons are already running.
+
+If you see errors like:
+  [LC2] Cannot connect to daemon RPC on port 9222: connect ECONNREFUSED 127.0.0.1:9222
+  [DOGE2] Cannot connect to daemon RPC on port 22655: connect ECONNREFUSED 127.0.0.1:22655
+
+That usually means one of these:
+  1) The proxy EXE was launched directly instead of the installed shortcut
+  2) The bundled daemons were blocked by antivirus or Windows SmartScreen on first launch
+  3) The daemons need another 1-2 minutes to start on the first run
+
+Check these files for the real cause:
+  • %LOCALAPPDATA%\LC2 DOGE2 Solo Miner\MINER-CONNECTION-INFO.txt
+  • %LOCALAPPDATA%\LC2 DOGE2 Solo Miner\logs\watchdog.log
+  • %LOCALAPPDATA%\LC2 DOGE2 Solo Miner\logs\proxy-err.log
+
 Merge-Mining: LC2 is parent chain; DOGE2 is merged via AuxPoW.
 Miners connect to BOTH endpoints independently.
 

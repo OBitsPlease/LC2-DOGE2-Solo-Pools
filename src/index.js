@@ -98,6 +98,27 @@ function defaultCookieFileForCoin(key) {
   return null;
 }
 
+function buildDaemonStartupHelp(symbol, rpcPort, err) {
+  const runtimeRoot = path.dirname(ds.getDataDir());
+  const infoPath = path.join(runtimeRoot, 'MINER-CONNECTION-INFO.txt');
+  const logDir = path.join(runtimeRoot, 'logs');
+  const refusedConnection = /ECONNREFUSED/i.test(err?.message || '');
+  const launcherHint = process.pkg
+    ? 'If you installed the app, do not launch lc2-solo-proxy-windows.exe directly. Use the Desktop or Start Menu shortcut named LC2 DOGE2 Solo Miner so the launcher can start the daemons first.'
+    : 'Start the launcher script or watchdog first so the daemons are running before the proxy connects.';
+
+  const lines = [
+    `[${symbol}] Cannot connect to daemon RPC on port ${rpcPort}: ${err.message}`
+  ];
+
+  if (refusedConnection) {
+    lines.push(launcherHint);
+    lines.push(`After launch, check ${infoPath} and the logs in ${logDir} if the daemons still do not come up.`);
+  }
+
+  return lines.join('\n');
+}
+
 function writeStartupSummary(payload) {
   const outPath = path.join(ds.getDataDir(), 'startup-summary.json');
   fs.mkdirSync(path.dirname(outPath), { recursive: true });
@@ -348,7 +369,7 @@ async function startCoin(key, cfg) {
     const count = await rpc.getBlockCount();
     console.log(`[${cfg.symbol}] RPC OK — current block height: ${count}`);
   } catch (err) {
-    throw new Error(`[${cfg.symbol}] Cannot connect to daemon RPC on port ${cfg.rpc.port}: ${err.message}`);
+    throw new Error(buildDaemonStartupHelp(cfg.symbol, cfg.rpc.port, err));
   }
 
   const poolId = `${key}_solo1`;

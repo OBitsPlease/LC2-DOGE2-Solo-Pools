@@ -28,6 +28,12 @@ On first launch, the app:
 
 If default ports are already in use, the app automatically switches to the next available ports.
 
+Important:
+
+1. Start the app from the Desktop icon or Start Menu shortcut, not by double-clicking `dist\lc2-solo-proxy-windows.exe`
+2. The shortcut runs the launcher and watchdog first; the EXE by itself only starts the proxy and will fail with `ECONNREFUSED` if the daemons are not already running
+3. If startup still fails, open `%LOCALAPPDATA%\LC2 DOGE2 Solo Miner\logs\watchdog.log` and `%LOCALAPPDATA%\LC2 DOGE2 Solo Miner\logs\proxy-err.log`
+
 ---
 
 ## How To Mine
