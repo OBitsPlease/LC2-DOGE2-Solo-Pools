@@ -11,7 +11,7 @@
  */
 
 const ORPHAN_RECHECK_MS = 120000;
-const MAX_ORPHAN_RESUBMIT_ATTEMPTS = 3;
+const MAX_ORPHAN_RESUBMIT_ATTEMPTS = 1;
 const RPCClient       = require('./rpc-client');
 const JobManager      = require('./job-manager');
 const StratumServer   = require('./stratum-server');

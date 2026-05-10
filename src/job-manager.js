@@ -762,6 +762,8 @@ class JobManager extends EventEmitter {
     // Re-extract from template at submit time for maximum compatibility with
     // daemon variants; fall back to cached job.mwebHex.
     const mwebHex = extractMwebHex(job.template) || job.mwebHex || '';
+    // '01' varint prefix = 1 MWEB extension block follows (required by LC2 MWEB wire format)
+    const mwebBlockHex = mwebHex ? '01' + mwebHex : '';
 
     if (this.coin.symbol === 'LC2' && !mwebHex) {
       writeDiagnosticLog('mweb-template-empty', {
@@ -773,9 +775,9 @@ class JobManager extends EventEmitter {
       });
     }
 
-    console.log(`[${this.coin.symbol}] _buildBlockHex: height=${job.height} segwit=${segwitCoinbase} mwebHex.len=${mwebHex.length} mwebHex.preview=${mwebHex.slice(0, 20) || '(empty)'}`);
+    console.log(`[${this.coin.symbol}] _buildBlockHex: height=${job.height} segwit=${segwitCoinbase} mwebHex.len=${mwebHex.length} mwebBlockHex.len=${mwebBlockHex.length} mwebHex.preview=${mwebHex.slice(0, 20) || '(empty)'}`);
 
-    return header.toString('hex') + txCount.toString('hex') + coinbaseTxHex + otherTxs + mwebHex;
+    return header.toString('hex') + txCount.toString('hex') + coinbaseTxHex + otherTxs + mwebBlockHex;
   }
 
   async _submitAuxBlock(lc2Job, extraNonce1Hex, extraNonce2Hex, lc2HeaderBytes, workerName = null) {
@@ -936,13 +938,13 @@ class JobManager extends EventEmitter {
 
         // Retry once with alternate CMerkleTx.hashBlock encoding for forks that
         // expect parent block hash bytes in BE instead of LE.
-        if (String(result) === 'high-hash') {
+        if (String(result) === 'high-hash' || String(result) === 'inconclusive') {
           try {
             writeDiagnosticLog('aux-submit-retry-attempt', {
               aux: this._auxJobMgr?.coin?.symbol || 'DOGE2',
               workerName,
               height: auxHeight,
-              retry: 'parent-hash-be'
+              retry: String(result) === 'inconclusive' ? 'parent-hash-be-after-inconclusive' : 'parent-hash-be'
             });
 
             const retryResult = await this._auxJobMgr.rpc.call('submitblock', [auxBlockHexAltHashBE]);
@@ -955,7 +957,7 @@ class JobManager extends EventEmitter {
                 accepted: this._auxAccepted,
                 submits: this._auxSubmits,
                 candidates: this._auxCandidates,
-                retry: 'parent-hash-be'
+                retry: String(result) === 'inconclusive' ? 'parent-hash-be-after-inconclusive' : 'parent-hash-be'
               });
               console.log(`[DOGE2] 🎉 AuxPoW block ACCEPTED on retry at height ${auxHeight} (parent-hash-be)!`);
               this.emit('auxBlockFound', {
@@ -971,7 +973,7 @@ class JobManager extends EventEmitter {
               aux: this._auxJobMgr?.coin?.symbol || 'DOGE2',
               workerName,
               height: auxHeight,
-              retry: 'parent-hash-be',
+              retry: String(result) === 'inconclusive' ? 'parent-hash-be-after-inconclusive' : 'parent-hash-be',
               result: String(retryResult)
             });
           } catch (retryErr) {
@@ -979,7 +981,7 @@ class JobManager extends EventEmitter {
               aux: this._auxJobMgr?.coin?.symbol || 'DOGE2',
               workerName,
               height: auxHeight,
-              retry: 'parent-hash-be',
+              retry: String(result) === 'inconclusive' ? 'parent-hash-be-after-inconclusive' : 'parent-hash-be',
               error: retryErr.message
             });
           }
