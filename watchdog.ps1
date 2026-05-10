@@ -1041,20 +1041,24 @@ function Start-Proxy([string]$reason = 'unspecified') {
 
     $launchFile = $null
     $launchArgs = ''
+    $launchMode = ''
 
     $nodeExe = Resolve-NodeExePath
     $sourceEntry = Join-Path $ProxyDir 'src/index.js'
 
-    # Prefer source entry when available so local hotfixes are effective
-    # without requiring a new packaged exe build.
-    if ($nodeExe -and (Test-Path $sourceEntry)) {
+    if (Test-Path $ProxyExe) {
+        $launchFile = $ProxyExe
+        $launchMode = 'packaged-exe'
+    } elseif ($nodeExe -and (Test-Path $sourceEntry)) {
         $launchFile = $nodeExe
         $launchArgs = 'src/index.js'
-    } elseif (Test-Path $ProxyExe) {
-        $launchFile = $ProxyExe
+        $launchMode = 'node-source-fallback'
     } else {
         throw 'Cannot start proxy: no packaged exe found and Node.js source runtime is unavailable.'
     }
+
+    Write-Log "Proxy launch mode: $launchMode | file=$launchFile | args=$launchArgs"
+    Write-ProxyEvent "LAUNCH mode=$launchMode file=$launchFile args=$launchArgs"
 
     $prevEnableLc2 = $env:DAEMON_ENABLE_LC2
     $prevEnableDoge2 = $env:DAEMON_ENABLE_DOGE2
@@ -1082,14 +1086,19 @@ function Start-Proxy([string]$reason = 'unspecified') {
     $proc = $null
     $startErr = $null
     try {
-        $proc = Start-Process -FilePath $launchFile `
-            -ArgumentList $launchArgs `
-            -WorkingDirectory $ProxyDir `
-            -WindowStyle Hidden `
-            -RedirectStandardOutput $ProxyOut `
-            -RedirectStandardError $ProxyErr `
-            -PassThru `
-            -ErrorAction Stop
+        $startParams = @{
+            FilePath = $launchFile
+            WorkingDirectory = $ProxyDir
+            WindowStyle = 'Hidden'
+            RedirectStandardOutput = $ProxyOut
+            RedirectStandardError = $ProxyErr
+            PassThru = $true
+            ErrorAction = 'Stop'
+        }
+        if ($launchArgs) {
+            $startParams.ArgumentList = $launchArgs
+        }
+        $proc = Start-Process @startParams
     } catch {
         $startErr = $_.Exception.Message
         Write-Log "ERROR: Start-Process for proxy threw: $startErr"
