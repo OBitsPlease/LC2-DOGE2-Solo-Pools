@@ -602,7 +602,7 @@ async function main() {
     };
 
     // Log and record DOGE2 AuxPoW blocks found via LC2 shares
-    lc2Instance.jobMgr.on('auxBlockFound', ({ coin, height, blockHex = null, hashHex = null }) => {
+    lc2Instance.jobMgr.on('auxBlockFound', ({ coin, workerName = null, height, blockHex = null, hashHex = null }) => {
       console.log(`\n🎉 *** DOGE2 AuxPoW BLOCK FOUND *** at height ${height}\n`);
       const poolId = 'doge2_solo1';
       const reward = doge2Instance.jobMgr.currentJob?.template?.coinbasevalue
@@ -613,8 +613,8 @@ async function main() {
         hash: hashHex || doge2Instance.jobMgr._lastBlockHash || '',
         reward: reward * 0.99,
         effort: 0,
-        miner:  'merge-mined',
-        worker: 'merge-mined',
+        miner:  workerName ? workerName.split('.')[0] : 'merge-mined',
+        worker: workerName || 'merge-mined',
         status: 'pending',
         confirmationProgress: 0,
         blockHex,

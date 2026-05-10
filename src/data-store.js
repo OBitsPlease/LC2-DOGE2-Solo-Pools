@@ -248,6 +248,11 @@ function addShare(share) {
   scheduleSharesFlush();
 }
 
+// Share difficulties are tracked against the scrypt pool diff-1 reference
+// (0x0000ffff...), while daemon getdifficulty reports Bitcoin-style diff.
+// Normalize the expected round work into the same units before comparing.
+const SCRYPT_NETWORK_DIFF_MULTIPLIER = 65536;
+
 function getRoundEffort(poolId, networkDifficulty) {
   const diff = Number(networkDifficulty || 0);
   if (!Number.isFinite(diff) || diff <= 0) return 0;
@@ -272,7 +277,7 @@ function getRoundEffort(poolId, networkDifficulty) {
     return sum + (Number.isFinite(d) && d > 0 ? d : 1);
   }, 0);
 
-  return totalShareDifficulty / diff;
+  return totalShareDifficulty / (diff * SCRYPT_NETWORK_DIFF_MULTIPLIER);
 }
 
 function getSharesSince(poolId, sinceMs) {

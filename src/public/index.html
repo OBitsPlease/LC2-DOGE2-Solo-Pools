@@ -602,12 +602,19 @@ function buildPoolTabs(pools) {
 }
 
 function switchPool(id) {
+  const previousPool = POOL_ID;
     POOL_ID = id;
+  poolSwitchSerial += 1;
     history.replaceState(null, '', '?pool=' + id);
     blocksPageNum = 0;
     blocksFilter  = null;
     allMiners     = [];
     walletStatsCache = null;
+  resetMinerChartUI();
+  if (previousPool !== id) {
+    const tbody = document.getElementById('miners-tbody');
+    if (tbody) tbody.innerHTML = '<tr><td colspan="7" class="empty loading">Loading miners…</td></tr>';
+  }
     fetch('/dashboard/pools-meta').then(r => r.json()).then(pools => {
         buildPoolTabs(pools);
         const cur = pools.find(p => p.id === id);
@@ -624,6 +631,25 @@ let blocksFilter  = null;
 let allMiners     = [];
 let poolConfig    = {};
 let walletStatsCache = null;
+let poolSwitchSerial = 0;
+
+function resetMinerChartUI() {
+  try {
+    if (charts.chartMinerHr) {
+      charts.chartMinerHr.destroy();
+      delete charts.chartMinerHr;
+    }
+  } catch (_) {}
+
+  const minerSel = document.getElementById('miner-select');
+  if (minerSel) minerSel.innerHTML = '<option value="">Select miner…</option>';
+
+  const workerSel = document.getElementById('worker-select');
+  if (workerSel) {
+    workerSel.innerHTML = '<option value="">All workers</option>';
+    workerSel.style.display = 'none';
+  }
+}
 
 async function stopAllFromDashboard() {
   const btn = document.getElementById('stop-all-btn');
@@ -724,6 +750,16 @@ function fmtReward(v) {
   if (Number.isInteger(v)) return v.toLocaleString();
   return v.toFixed(4);
 }
+function fmtCoinAmount(v, digits = 4) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return '–';
+  return n.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits });
+}
+function fmtPercent(v, digits = 1) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return '–';
+  return n.toLocaleString(undefined, { minimumFractionDigits: digits, maximumFractionDigits: digits });
+}
 function fmtPrice(p) {
   if (!Number.isFinite(p) || p <= 0) return '–';
   if (p >= 1)       return p.toFixed(4);
@@ -734,6 +770,39 @@ function fmtPrice(p) {
 }
 function setEl(id, val) { const el = document.getElementById(id); if (el) el.textContent = val; }
 async function get(url) { const r = await fetch(url); if (!r.ok) throw new Error(r.statusText); return r.json(); }
+
+function makeFivePointStarCanvas(size = 28) {
+  const c = document.createElement('canvas');
+  c.width = size;
+  c.height = size;
+  const ctx = c.getContext('2d');
+  const cx = size / 2;
+  const cy = size / 2;
+  const outer = size * 0.46;
+  const inner = size * 0.19;
+  const points = 5;
+  ctx.beginPath();
+  for (let i = 0; i < points * 2; i++) {
+    const angle = (i * Math.PI / points) - (Math.PI / 2);
+    const r = (i % 2 === 0) ? outer : inner;
+    const x = cx + r * Math.cos(angle);
+    const y = cy + r * Math.sin(angle);
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  ctx.closePath();
+  // High-contrast star so block markers remain visible over bright hashrate lines.
+  ctx.strokeStyle = '#071018';
+  ctx.lineWidth = 4;
+  ctx.stroke();
+  ctx.fillStyle = '#00e5ff';
+  ctx.fill();
+  ctx.strokeStyle = '#ffffff';
+  ctx.lineWidth = 1.8;
+  ctx.fill();
+  ctx.stroke();
+  return c;
+}
 
 // ─── CHART FACTORY ─────────────────────────────────────────────────────────
 function ds(label, data, color) {
@@ -813,7 +882,7 @@ async function loadPoolStats() {
         setEl('net-diff', fmtDiff(ns.networkDifficulty || 0));
         setEl('net-peers', `${ns.connectedPeers || 0} peers`);
         setEl('total-blocks', (pool.totalBlocks || 0).toLocaleString());
-        setEl('total-paid', (pool.totalPaid || 0).toFixed(4) + ' ' + POOL_SYMBOL);
+        setEl('total-paid', fmtCoinAmount(pool.totalPaid || 0) + ' ' + POOL_SYMBOL);
         setEl('h-height', blockHeight.toLocaleString());
         setEl('h-peers', ns.connectedPeers || 0);
         setEl('h-fee', (pool.poolFeePercent || 1) + '%');
@@ -828,12 +897,13 @@ async function loadPoolStats() {
         // Luck / effort
         const effort = pool.poolEffort;
         if (effort != null) {
-            const pct = (effort * 100).toFixed(1);
+          const pct = effort * 100;
             setEl('luck-value', pct + '%');
             const bar = document.getElementById('luck-bar');
             const fill = Math.min(100, effort * 100);
             bar.style.width = fill + '%';
             bar.style.background = effort < 1 ? 'var(--green)' : effort < 2 ? 'var(--yellow)' : 'var(--red)';
+          setEl('luck-value', fmtPercent(pct) + '%');
         }
 
         // API health
@@ -902,30 +972,39 @@ async function loadPerformance() {
 
 // ─── MINERS TABLE ────────────────────────────────────────────────────────────
 async function loadMiners() {
+  const reqPoolId = POOL_ID;
+  const reqSerial = poolSwitchSerial;
     try {
-        const window600 = await fetch(`/dashboard/active-workers?poolId=${POOL_ID}&window=600`).then(r => r.json());
+    const window600 = await fetch(`/dashboard/active-workers?poolId=${reqPoolId}&window=600`).then(r => r.json());
+    if (reqPoolId !== POOL_ID || reqSerial !== poolSwitchSerial) return;
         const tbody = document.getElementById('miners-tbody');
         const dismissed = JSON.parse(sessionStorage.getItem('dismissedWorkers') || '{}');
         const now = Date.now();
         const active = (Array.isArray(window600) ? window600 : []).filter(w => {
-            const key = `${POOL_ID}:${w.workerName}`;
+      const key = `${reqPoolId}:${w.workerName}`;
             return !dismissed[key] || (now - dismissed[key]) > 3600000;
         });
         allMiners = active;
 
         const sel = document.getElementById('miner-select');
-        const existing = new Set([...sel.options].slice(1).map(o => o.value));
+        const prevSelected = sel?.value || '';
+    if (sel) sel.innerHTML = '<option value="">Select miner…</option>';
         const addresses = [...new Set(active.map(w => w.address || w.miner).filter(Boolean))];
         for (const addr of addresses) {
-            if (!existing.has(addr)) {
-                const opt = document.createElement('option');
-                opt.value = addr; opt.textContent = fmtAddr(addr);
-                sel.appendChild(opt);
-            }
+      const opt = document.createElement('option');
+      opt.value = addr; opt.textContent = fmtAddr(addr);
+      sel.appendChild(opt);
         }
 
         const badge = document.getElementById('miners-badge');
         if (badge) badge.textContent = active.length + ' active';
+
+        // Keep history chart useful by auto-selecting the first miner when none is selected.
+        if (sel) {
+          if (addresses.includes(prevSelected)) sel.value = prevSelected;
+          else if (addresses.length > 0) sel.value = addresses[0];
+          if (sel.value && sel.value !== prevSelected) loadMinerChart();
+        }
 
         if (!active.length) {
             tbody.innerHTML = '<tr><td colspan="7" class="empty">No active workers</td></tr>';
@@ -933,7 +1012,7 @@ async function loadMiners() {
         }
 
         tbody.innerHTML = active.map(w => {
-            const key = `${POOL_ID}:${w.workerName}`;
+          const key = `${reqPoolId}:${w.workerName}`;
             const addr = w.address || w.miner || '–';
             return `<tr data-key="${key}">
               <td><span class="worker-chip"><span class="dot"></span>${w.workerName || '–'}</span></td>
@@ -946,6 +1025,7 @@ async function loadMiners() {
             </tr>`;
         }).join('');
     } catch(e) {
+      if (reqPoolId !== POOL_ID || reqSerial !== poolSwitchSerial) return;
         document.getElementById('miners-tbody').innerHTML = '<tr><td colspan="7" class="empty">Could not load workers</td></tr>';
     }
 }
@@ -953,15 +1033,35 @@ async function loadMiners() {
 // ─── MINER CHART ──────────────────────────────────────────────────────────
 let minerBlocks = [];
 async function loadMinerChart() {
+  const reqPoolId = POOL_ID;
+  const reqSerial = poolSwitchSerial;
     const addr = document.getElementById('miner-select')?.value;
-    if (!addr) return;
+  if (!addr) {
+    try {
+      if (charts.chartMinerHr) {
+        charts.chartMinerHr.destroy();
+        delete charts.chartMinerHr;
+      }
+    } catch (_) {}
+    return;
+  }
     const workerFilter = document.getElementById('worker-select')?.value || '';
     try {
         const [samples, blocksData] = await Promise.all([
-            get(`${API}/api/pools/${POOL_ID}/miners/${addr}/performance?mode=Day`),
-            get(`${API}/api/pools/${POOL_ID}/blocks?pageSize=100`).catch(() => [])
+      get(`${API}/api/pools/${reqPoolId}/miners/${addr}/performance?mode=Day`),
+      get(`${API}/api/pools/${reqPoolId}/blocks?pageSize=100`).catch(() => [])
         ]);
-        minerBlocks = Array.isArray(blocksData) ? blocksData.filter(b => (b.miner||'').startsWith(addr.slice(0,8))) : [];
+    if (reqPoolId !== POOL_ID || reqSerial !== poolSwitchSerial) return;
+        const minerKey = String(addr || '').toLowerCase();
+        const uniqueMinerKeys = new Set((allMiners || []).map(m => String(m.address || m.miner || '').toLowerCase()).filter(Boolean));
+        minerBlocks = Array.isArray(blocksData) ? blocksData.filter(b => {
+          const blockMiner = String(b.miner || '').toLowerCase();
+          const blockWorker = String(b.worker || '').toLowerCase();
+          if (workerFilter) return blockWorker === workerFilter.toLowerCase();
+          if (blockMiner === minerKey || blockWorker.startsWith(minerKey + '.')) return true;
+          if (reqPoolId.startsWith('doge2') && uniqueMinerKeys.size === 1 && uniqueMinerKeys.has(minerKey) && (blockMiner === 'merge-mined' || blockWorker === 'merge-mined')) return true;
+          return false;
+        }) : [];
 
         let datasets = [];
         if (workerFilter) {
@@ -974,10 +1074,20 @@ async function loadMinerChart() {
                 const pts = samples.map(s => ({ x: new Date(s.created), y: s.workers?.[w]?.hashrate || 0 }));
                 return ds(w || 'default', pts, colors[i % colors.length]);
             });
-            if (!datasets.length) {
-                const pts = samples.map(s => ({ x: new Date(s.created), y: Object.values(s.workers||{}).reduce((a,w) => a+(w.hashrate||0), 0) }));
-                datasets.push(ds('hashrate', pts, '#f7931a'));
-            }
+
+          // DOGE2 can report worker names without worker-level hashrate values.
+          // In that case, ensure we still render the aggregate miner hashrate line.
+          const hasWorkerSignal = datasets.some(series =>
+            (series.data || []).some(p => Number(p?.y || 0) > 0)
+          );
+          if (!datasets.length || !hasWorkerSignal) {
+            const pts = samples.map(s => {
+              const sumWorkers = Object.values(s.workers || {}).reduce((a, w) => a + (w.hashrate || 0), 0);
+              const agg = Number(s.hashrate || 0);
+              return { x: new Date(s.created), y: agg > 0 ? agg : sumWorkers };
+            });
+            datasets = [ds('hashrate', pts, '#f7931a')];
+          }
         }
 
         // Star markers for blocks found within chart window
@@ -988,27 +1098,23 @@ async function loadMinerChart() {
                 .map(b => ({ t: new Date(b.created).getTime(), block: b }))
                 .filter(({ t }) => t >= chartStart && t <= chartEnd)
                 .map(({ t, block }) => {
-                    let y = 0;
+                    let y = samples[0].hashrate || 0;
                     for (let i = 0; i < samples.length - 1; i++) {
                         const t0 = new Date(samples[i].created).getTime();
                         const t1 = new Date(samples[i+1].created).getTime();
+                      const y0 = workerFilter ? (samples[i].workers?.[workerFilter]?.hashrate || 0) : (samples[i].hashrate || 0);
+                      const y1 = workerFilter ? (samples[i+1].workers?.[workerFilter]?.hashrate || 0) : (samples[i+1].hashrate || 0);
                         if (t >= t0 && t <= t1) {
                             const frac = (t-t0)/(t1-t0);
-                            y = (samples[i].hashrate||0) + frac * ((samples[i+1].hashrate||0)-(samples[i].hashrate||0));
+                        y = y0 + frac * (y1 - y0);
                             break;
                         }
                     }
                     return { x: new Date(block.created), y, height: block.blockHeight||block.height, reward: block.reward };
                 });
             if (starPts.length) {
-                const sc2 = document.createElement('canvas'); sc2.width=28; sc2.height=28;
-                const sc = sc2.getContext('2d');
-                const cx=14,cy=14,outer=13,inner=5,pts=5;
-                sc.beginPath();
-                for (let i=0;i<pts*2;i++) { const a=(i*Math.PI/pts)-Math.PI/2, r=i%2===0?outer:inner; i===0?sc.moveTo(cx+r*Math.cos(a),cy+r*Math.sin(a)):sc.lineTo(cx+r*Math.cos(a),cy+r*Math.sin(a)); }
-                sc.closePath(); sc.fillStyle='#f7d354'; sc.strokeStyle='#c8a800'; sc.lineWidth=1.5; sc.fill(); sc.stroke();
-                const starImg = new Image(28,28); starImg.src=sc2.toDataURL();
-                datasets.push({ label:'⭐ Block Found', data:starPts, type:'scatter', pointStyle:starImg, pointRadius:14, pointHoverRadius:18, borderColor:'#f7d354', backgroundColor:'#f7d354', borderWidth:2, showLine:false });
+              const fivePointStar = makeFivePointStarCanvas(28);
+              datasets.push({ label:'⭐ Block Found', data:starPts, type:'scatter', pointStyle:fivePointStar, pointRadius:15, pointHoverRadius:20, pointBackgroundColor:'#00e5ff', pointBorderColor:'#ffffff', pointBorderWidth:2, borderColor:'#00e5ff', backgroundColor:'#00e5ff', borderWidth:2, showLine:false, order:-100 });
             }
         }
 
@@ -1247,10 +1353,10 @@ async function loadWalletStats() {
     const totalExpected = Number.isFinite(Number(d.totalExpected)) ? Number(d.totalExpected) : Number(d.balance || 0);
     const spendable = Number.isFinite(Number(d.spendable)) ? Number(d.spendable) : Number(d.balance || 0);
     const immature = Number.isFinite(Number(d.immature)) ? Number(d.immature) : 0;
-    setEl('wallet-balance', `${totalExpected.toFixed(4)} ${sym}`);
+    setEl('wallet-balance', `${fmtCoinAmount(totalExpected)} ${sym}`);
     setEl('wallet-usd', d.usdValue !== null ? `$${d.usdValue?.toLocaleString()||'–'} USD` : '– USD');
         const bd = document.getElementById('wallet-breakdown');
-    if (bd) bd.textContent = `spendable ${spendable.toFixed(4)} + immature ${immature.toFixed(4)} ${sym}`;
+    if (bd) bd.textContent = `spendable ${fmtCoinAmount(spendable)} + immature ${fmtCoinAmount(immature)} ${sym}`;
         updateSendDestinationHint();
     } catch(_) {}
 }
@@ -1314,11 +1420,11 @@ async function loadPendingRewards() {
     const immature = Number(d.immature || 0);
     const chainPending = Number(d.chainPending || 0);
     if (total <= 0) {
-      el.textContent  = '0.0000 ' + POOL_SYMBOL;
+      el.textContent  = fmtCoinAmount(0) + ' ' + POOL_SYMBOL;
       sub.textContent = 'no blocks maturing';
         } else {
-      el.textContent  = total.toFixed(4) + ' ' + POOL_SYMBOL;
-      sub.textContent = `immature ${immature.toFixed(4)} + pending ${chainPending.toFixed(4)}`;
+      el.textContent  = fmtCoinAmount(total) + ' ' + POOL_SYMBOL;
+      sub.textContent = `immature ${fmtCoinAmount(immature)} + pending ${fmtCoinAmount(chainPending)}`;
         }
     } catch(_) {}
 }
@@ -1331,7 +1437,7 @@ async function loadPoolBalance() {
             fetch(`/dashboard/wallet-stats?poolId=${POOL_ID}`).then(r => r.json()).catch(() => ({}))
         ]);
         const b = Number(bal.balance || 0);
-        setEl('pool-balance', b.toFixed(4) + ' ' + POOL_SYMBOL);
+        setEl('pool-balance', fmtCoinAmount(b) + ' ' + POOL_SYMBOL);
         const usd = (price.price && b) ? '$'+(price.price*b).toFixed(2)+' USD' : '– USD';
         setEl('pool-balance-usd', usd);
         const bdEl = document.getElementById('pool-balance-breakdown');
@@ -1340,7 +1446,7 @@ async function loadPoolBalance() {
             bdEl.innerHTML = (bal.breakdown).map((e,i) => {
                 const prefix = i === bal.breakdown.length-1 ? '└' : '├';
                 const short  = e.address.slice(0,8)+'…'+e.address.slice(-6);
-                return `<div style="font-size:10px;color:var(--muted);font-family:monospace;line-height:1.7"><span style="color:var(--accent2)">${prefix}</span><span title="${e.address}">${short}</span><span style="float:right;color:var(--text)">${e.amount.toFixed(4)}</span></div>`;
+                return `<div style="font-size:10px;color:var(--muted);font-family:monospace;line-height:1.7"><span style="color:var(--accent2)">${prefix}</span><span title="${e.address}">${short}</span><span style="float:right;color:var(--text)">${fmtCoinAmount(e.amount)}</span></div>`;
             }).join('');
         } else if (bdEl) { bdEl.style.display='none'; }
     } catch(_) {}

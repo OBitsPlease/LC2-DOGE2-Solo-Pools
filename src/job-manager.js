@@ -913,6 +913,7 @@ class JobManager extends EventEmitter {
         console.log(`[DOGE2] 🎉 AuxPoW block ACCEPTED at height ${auxHeight}!`);
         this.emit('auxBlockFound', {
           coin: 'DOGE2',
+          workerName,
           height: auxHeight,
           blockHex: auxBlockHex,
           hashHex: null
@@ -962,6 +963,7 @@ class JobManager extends EventEmitter {
               console.log(`[DOGE2] 🎉 AuxPoW block ACCEPTED on retry at height ${auxHeight} (parent-hash-be)!`);
               this.emit('auxBlockFound', {
                 coin: 'DOGE2',
+                workerName,
                 height: auxHeight,
                 blockHex: auxBlockHexAltHashBE,
                 hashHex: null
