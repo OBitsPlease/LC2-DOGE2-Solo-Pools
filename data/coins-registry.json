@@ -40,8 +40,8 @@
       "daemonBinDir": "bin/lc2",
       "dataDir": "%APPDATA%\\LitecoinII",
       "confFile": "%APPDATA%\\LitecoinII\\litecoinii.conf",
-      "githubRepo": "TODO/litecoinii",
-      "installedVersion": "1.0.0",
+      "githubRepo": "litecoinII-project/litecoinII",
+      "installedVersion": "0.21.5.5",
       "mergedParent": null
     },
     {

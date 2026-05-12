@@ -52,9 +52,9 @@ const coins = {
     // Set githubRepo to the coin's GitHub repo slug (owner/repo)
     // assetPattern: regex to match the Windows 64-bit zip in the release assets
     daemonUpdate: {
-      githubRepo:       'TODO/litecoinii',      // ← fill in when repo is known
-      assetPattern:     'windows.{0,10}64.{0,30}\\.zip',
-      installedVersion: '1.0.0'                 // ← set to your installed version
+      githubRepo:       'litecoinII-project/litecoinII',
+      assetPattern:     '(win|windows).{0,10}64.{0,30}\\.zip',
+      installedVersion: '0.21.5.5'
     }
   },
 
@@ -102,7 +102,7 @@ const coins = {
 };
 
 module.exports = {
-  appVersion: '2.0.2',
+  appVersion: '2.0.3',
   coins,
   dashboard: {
     port: 8081   // web dashboard port (8080 is used by existing dashboard)
