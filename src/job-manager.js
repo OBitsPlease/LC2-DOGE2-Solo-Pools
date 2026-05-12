@@ -93,6 +93,8 @@ class JobManager extends EventEmitter {
     this._lastBlockHash = null;
     this._shareCount = 0;
     this._shareWindow = []; // { ts, diff } for hashrate estimation
+    this._lastStableHashrate = 0;
+    this._lastStableHashrateAt = 0;
     this._networkInfo = {};
     this._daemonUp = false;
     this._daemonLastError = null;
@@ -375,16 +377,30 @@ class JobManager extends EventEmitter {
   }
 
   getPoolHashrate() {
-    // If this chain is merge-mined by a parent (e.g. DOGE2 via LC2), use the parent's hashrate
-    if (this._parentJobMgr) return this._parentJobMgr.getPoolHashrate();
-
     // Scrypt diff-1 constant: 65536 (2^16) matches the 0x0000ffff... share reference used by ASIC firmware.
     // Formula: hashrate = sum(share_difficulties) * SCRYPT_DIFF1 / window_seconds
     const SCRYPT_DIFF1 = 65536; // 2^16
+    const HASHRATE_WINDOW_MS = 180000;
+    const HASHRATE_WINDOW_SECONDS = 180;
+    const HASHRATE_GRACE_MS = 600000;
     const now = Date.now();
-    this._shareWindow = this._shareWindow.filter(s => now - s.ts < 30000);
+    this._shareWindow = this._shareWindow.filter(s => now - s.ts < HASHRATE_WINDOW_MS);
     const totalDiff = this._shareWindow.reduce((sum, s) => sum + s.diff, 0);
-    return (totalDiff * SCRYPT_DIFF1) / 30;
+    const localHashrate = (totalDiff * SCRYPT_DIFF1) / HASHRATE_WINDOW_SECONDS;
+    const parentHashrate = this._parentJobMgr ? this._parentJobMgr.getPoolHashrate() : 0;
+    const currentHashrate = Math.max(localHashrate, parentHashrate);
+
+    if (currentHashrate > 0) {
+      this._lastStableHashrate = currentHashrate;
+      this._lastStableHashrateAt = now;
+      return currentHashrate;
+    }
+
+    if (this._lastStableHashrate > 0 && (now - this._lastStableHashrateAt) < HASHRATE_GRACE_MS) {
+      return this._lastStableHashrate;
+    }
+
+    return 0;
   }
 
   _recordShare(diff = 1) {

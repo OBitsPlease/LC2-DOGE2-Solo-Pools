@@ -11,6 +11,13 @@ data/startup-summary.json
 data/update-request.json
 data/update-status.json
 data/installed-versions.json
+data/MINER-CONNECTION-INFO.txt
+data/perf_*.json
+data/shares.json
+data/blocks.json
+
+# Local archive/test workspace
+fixes/
 
 # Local logs
 *.log

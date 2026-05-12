@@ -545,8 +545,9 @@ class StratumServer extends EventEmitter {
 
     // Track share timestamp for per-miner hashrate
     const now = Date.now();
+    const MINER_HASHRATE_WINDOW_MS = 180000;
     client._shareTimes.push(now);
-    client._shareTimes = client._shareTimes.filter(t => now - t < 60000);
+    client._shareTimes = client._shareTimes.filter(t => now - t < MINER_HASHRATE_WINDOW_MS);
 
     console.log(`[${this.config.symbol}] Share from ${workerName} — hash: ${result.hashHex ? result.hashHex.slice(0,12) : '?'}...`);
     if (result?.diag?.compatAccepted) {
@@ -638,11 +639,13 @@ class StratumServer extends EventEmitter {
 
   getMiners() {
     const now = Date.now();
+    const MINER_HASHRATE_WINDOW_MS = 180000;
+    const MINER_HASHRATE_WINDOW_SECONDS = 180;
     const result = [];
     for (const [, c] of this.clients) {
       if (!c.authorized) continue;
-      const recent = (c._shareTimes || []).filter(t => now - t < 60000);
-      const hashrate = (recent.length * (c.currentDiff || 1) * SCRYPT_DIFF1) / 60;
+      const recent = (c._shareTimes || []).filter(t => now - t < MINER_HASHRATE_WINDOW_MS);
+      const hashrate = (recent.length * (c.currentDiff || 1) * SCRYPT_DIFF1) / MINER_HASHRATE_WINDOW_SECONDS;
       result.push({
         address:    c.workerName ? c.workerName.split('.')[0] : 'unknown',
         workerName: c.workerName || 'unknown',

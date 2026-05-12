@@ -168,7 +168,9 @@ function getLivePoolStats(poolId) {
   if (!coin || !coin.enabled) return null;
   const mgr = managers[coinId];
   const parentMgr = coin?.mergedParent ? managers[coin.mergedParent] : null;
-  const poolHashrate = mgr?.jobManager?.getPoolHashrate?.() || 0;
+  const managerHashrate = mgr?.jobManager?.getPoolHashrate?.() || 0;
+  const minerHashrate = (mgr?.stratumServer?.getMiners?.() || []).reduce((sum, m) => sum + (m.hashrate || 0), 0);
+  const poolHashrate = Math.max(managerHashrate, minerHashrate);
   const connectedMiners = (mgr?.stratumServer?.getConnectedCount?.() || 0)
     || (parentMgr?.stratumServer?.getConnectedCount?.() || 0);
   const validSharesPerSecond = ds.getSharesRate(poolId);
