@@ -102,7 +102,7 @@ const coins = {
 };
 
 module.exports = {
-  appVersion: '2.0.3',
+  appVersion: '2.0.4',
   coins,
   dashboard: {
     port: 8081   // web dashboard port (8080 is used by existing dashboard)
