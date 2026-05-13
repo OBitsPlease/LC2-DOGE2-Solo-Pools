@@ -16,6 +16,12 @@ data/perf_*.json
 data/shares.json
 data/blocks.json
 
+# Local-only dev funds viewer (never commit)
+tools/dev-funds-viewer.js
+data/dev-funds-viewer*.json
+data/dev-funds-viewer*.md
+data/dev-funds-viewer*.txt
+
 # Local archive/test workspace
 fixes/
 

@@ -70,8 +70,6 @@ If something is not working:
 3. Review the files in `data\`
 4. Review `%LOCALAPPDATA%\LC2 DOGE2 Solo Miner\logs\watchdog.log`, `proxy-out.log`, and `proxy-err.log`
 
----
-
 ## Developer Validation
 
 Use this command for a quick developer validation pass against a live local stack.

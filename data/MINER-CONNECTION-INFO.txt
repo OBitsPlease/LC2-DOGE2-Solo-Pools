@@ -4,7 +4,7 @@
 
 Type this exact address into miners on the same network:
 
-LC2: 172.28.64.1:3335
+LC2: 172.28.64.1:3333
 
 Merged mining note:
 - DOGE2 is AuxPoW merge-mined automatically from LC2 shares.
@@ -17,11 +17,11 @@ Current block rewards:
 - DOGE2: 500,000 DOGE2
   Current reward: 500,000 DOGE2 per block. Halving in roughly 53 days to 250,000 DOGE2.
 
-If your miner requires the stratum+tcp:// prefix, use: stratum+tcp://172.28.64.1:3335
+If your miner requires the stratum+tcp:// prefix, use: stratum+tcp://172.28.64.1:3333
 
-Dashboard: http://172.28.64.1:8082/
-Local dashboard: http://127.0.0.1:8082/
+Dashboard: http://172.28.64.1:8081/
+Local dashboard: http://127.0.0.1:8081/
 
 If a miner is running on this same PC, you can also use 127.0.0.1 instead of the LAN IP.
 
-Generated: 5/5/2026, 5:48:02 PM
+Generated: 5/10/2026, 2:14:24 AM
