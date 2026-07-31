@@ -41,7 +41,8 @@ Check these files for the real cause:
   • %LOCALAPPDATA%\LC2 DOGE2 Solo Miner\logs\proxy-err.log
 
 Merge-Mining: LC2 is parent chain; DOGE2 is merged via AuxPoW.
-Miners connect to BOTH endpoints independently.
+ASIC miners should connect to the LC2 endpoint only.
+DOGE2 rewards are mined automatically from the same LC2 shares.
 
 To verify setup is working:
   1) Open MINER-CONNECTION-INFO.txt (live ports + dashboard URL)
@@ -97,13 +98,13 @@ FAQ FOR TESTERS
 ========================================================================
 
 Q: Why do I see both LC2 and DOGE2 as separate endpoints?
-A: They're separate endpoints. LC2 (3333) and DOGE2 (3334) run simultaneously.
-   Blocks on both can happen independently or together (merge-mining).
+A: The app can expose both, but for normal merged mining you should use LC2 only.
+  DOGE2 rewards are merge-mined automatically from LC2 shares.
 
 Q: What if I want to mine only LC2 or only DOGE2?
-A: Connect to the respective endpoint:
-   - LC2 only: stratum+tcp://127.0.0.1:3333
-   - DOGE2 only: stratum+tcp://127.0.0.1:3334
+A: Recommended path is LC2 endpoint only:
+  - LC2 merged-mining endpoint: stratum+tcp://127.0.0.1:3333
+  DOGE2 is mined through AuxPoW from the LC2 work.
 
 Q: Can I change the mining address?
 A: Yes! Via the dashboard (Wallet Manager tab):
@@ -139,5 +140,5 @@ For issues or questions:
 ========================================================================
 Dev Fee: 1% locked in app code
 Mining Address: User-configurable from the dashboard
-Updated: 2026-04-28
+Updated: 2026-07-30
 ========================================================================

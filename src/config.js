@@ -3,8 +3,7 @@
 /**
  * config.js — All per-coin and proxy settings.
  *
- * LC2 is fully configured.
- * DOGE2 values marked TODO — fill in once dev provides chain params.
+ * LC2 and DOGE2 are configured for current public networks.
  * DO NOT change DEV_FEE — it is locked at 1% in coinbase-builder.js.
  */
 
@@ -25,6 +24,14 @@ const coins = {
 
     // Stratum port miners connect to (3333 is free)
     stratumPort: 3333,
+
+    // Poll getblocktemplate frequently to minimize stale work windows.
+    // Faster updates reduce stale/late block submissions around tip changes.
+    templatePollMs: 1000,
+
+    // Use getblocktemplate longpoll wake-ups for near-instant tip changes.
+    enableLongpoll: true,
+    longpollTimeoutMs: 70000,
 
     // Starting share difficulty sent to miners.
     // Set high enough that each share represents meaningful work.
@@ -54,7 +61,7 @@ const coins = {
     daemonUpdate: {
       githubRepo:       'litecoinII-project/litecoinII',
       assetPattern:     '(win|windows).{0,10}64.{0,30}\\.zip',
-      installedVersion: '0.21.5.5'
+      installedVersion: '0.21.6.0'
     }
   },
 
@@ -70,7 +77,12 @@ const coins = {
     color: '#c2a633',
     logo: 'doge2-logo.png',
     blockReward: 500000,  // 500,000 DOGE2/block (early randomized phase)
-    blockRewardNote: 'Current reward: 500,000 DOGE2 per block. Halving in roughly 53 days to 250,000 DOGE2.',
+    blockRewardNote: 'Current reward: 500,000 DOGE2 per block.',
+    rewardSchedule: {
+      nextReward: 250000,
+      halvingHeight: 100002,
+      blockIntervalSecs: 60
+    },
     coinPrice: 0.00000037, // DC2/USDT on NestEx — update manually: https://trade.nestex.one/spot/DC2
 
     // DOGE2 is merge-mined from LC2 via AuxPoW — miners connect to LC2 stratum only
@@ -78,6 +90,13 @@ const coins = {
 
     // Stratum port (kept running but miners don't connect here directly)
     stratumPort: 3334,
+
+    // Aux chain can poll slower because ASICs are connected to LC2 only.
+    templatePollMs: 5000,
+
+    // Keep longpoll on for consistency, but this is less critical than LC2.
+    enableLongpoll: true,
+    longpollTimeoutMs: 70000,
 
     difficulty: 32768,
     miningAddress: 'D8ENbJtef4iMNfCsQ1Xavpm6ZCcTirJgp3',
@@ -93,16 +112,18 @@ const coins = {
     },
 
     // Daemon auto-update (GitHub releases)
+    // DC2's latest release can be mobile-wallet focused, so this pattern keeps
+    // auto-update scoped to core wallet/daemon Windows assets only.
     daemonUpdate: {
-      githubRepo:       'TODO/dogecoin2',         // ← fill in when repo is known
-      assetPattern:     'windows.{0,10}64.{0,30}\\.zip',
-      installedVersion: '0.0.7'                   // ← set to your installed version
+      githubRepo:       'LivingLitecoin/Doge2',
+      assetPattern:     '(dogecoin2|dc2).{0,40}(win|windows).{0,20}(64|x64).{0,40}\\.(zip|7z|exe)',
+      installedVersion: '0.0.7'
     }
   }
 };
 
 module.exports = {
-  appVersion: '2.0.4',
+  appVersion: '2.0.5',
   coins,
   dashboard: {
     port: 8081   // web dashboard port (8080 is used by existing dashboard)

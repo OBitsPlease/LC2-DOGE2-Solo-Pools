@@ -52,26 +52,60 @@ function resolveAppVersion() {
 function buildPoolsMeta() {
   return Object.entries(config.coins)
     .filter(([, c]) => c.enabled)
-    .map(([id, c]) => ({
-      id:          `${id}_solo1`,
-      coinId:      id,
-      symbol:      c.symbol,
-      name:        c.name || c.symbol,
-      color:       c.color || '#f7931a',
-      logo:        c.logo  || null,
-      hashUnit:    'KH/s',
-      blockReward: c.blockReward || 0,
-      blockRewardNote: c.blockRewardNote || '',
-      stratumPort: c.stratumPort,
-      algorithm:   'Scrypt',
-      devFee:      1
-    }));
+    .map(([id, c]) => {
+      const live = getLivePoolStats(`${id}_solo1`);
+      const livePool = live?.pool || null;
+
+      return {
+        id:          `${id}_solo1`,
+        coinId:      id,
+        symbol:      c.symbol,
+        name:        c.name || c.symbol,
+        color:       c.color || '#f7931a',
+        logo:        c.logo  || null,
+        hashUnit:    'KH/s',
+        blockReward: livePool?.blockReward || c.blockReward || 0,
+        blockRewardNote: livePool?.blockRewardNote || c.blockRewardNote || '',
+        stratumPort: c.stratumPort,
+        algorithm:   'Scrypt',
+        devFee:      1
+      };
+    });
 }
 
 function getCoinForPool(poolId) {
   // poolId looks like "lc2_solo1"
   const coinId = poolId.replace(/_solo\d+$/, '');
   return { coinId, coin: config.coins[coinId] };
+}
+
+function buildRewardNote(coin, networkHeight) {
+  const baseReward = Number(coin?.blockReward || 0);
+  const schedule = coin?.rewardSchedule || null;
+
+  if (!schedule || !Number.isFinite(Number(schedule.halvingHeight))) {
+    return coin?.blockRewardNote || '';
+  }
+
+  const halvingHeight = Math.trunc(Number(schedule.halvingHeight));
+  const remainingBlocks = Math.max(0, halvingHeight - Number(networkHeight || 0));
+  const nextReward = Number.isFinite(Number(schedule.nextReward)) ? Number(schedule.nextReward) : baseReward / 2;
+  const blockIntervalSecs = Number.isFinite(Number(schedule.blockIntervalSecs)) && Number(schedule.blockIntervalSecs) > 0
+    ? Number(schedule.blockIntervalSecs)
+    : 60;
+  const etaSecs = remainingBlocks * blockIntervalSecs;
+  const etaHours = Math.floor(etaSecs / 3600);
+  const etaMins = Math.max(0, Math.round((etaSecs % 3600) / 60));
+  const etaParts = [];
+  if (etaHours > 0) etaParts.push(`${etaHours}h`);
+  if (etaMins > 0 || etaParts.length === 0) etaParts.push(`${etaMins}m`);
+  const etaText = etaParts.join(' ');
+
+  if (remainingBlocks === 0) {
+    return `Next reward: ${Number.isInteger(nextReward) ? nextReward.toLocaleString() : nextReward} ${coin.symbol} per block.`;
+  }
+
+  return `Current reward: ${Number.isInteger(baseReward) ? baseReward.toLocaleString() : baseReward} ${coin.symbol} per block. Halving in ${remainingBlocks} blocks (~${etaText}) to ${Number.isInteger(nextReward) ? nextReward.toLocaleString() : nextReward} ${coin.symbol}.`;
 }
 
 async function getWalletSnapshot(mgr) {
@@ -198,6 +232,20 @@ function getLivePoolStats(poolId) {
         verificationProgress: typeof netInfo.verificationProgress === 'number' ? netInfo.verificationProgress : 0,
         initialBlockDownload: !!netInfo.initialBlockDownload,
         blocksBehind:        Number.isFinite(netInfo.blocksBehind) ? netInfo.blocksBehind : 0,
+        syncPaused:          mgr?.jobManager?._syncPaused === true,
+        lastSyncNudgeAt:     Number(mgr?.jobManager?._lastSyncNudgeAt || 0),
+        lastSyncNudgeActions: Array.isArray(mgr?.jobManager?._lastSyncNudgeActions)
+          ? mgr.jobManager._lastSyncNudgeActions
+          : [],
+        lastSyncNudgePeerCount: Number.isFinite(Number(mgr?.jobManager?._lastSyncNudgePeerCount))
+          ? Number(mgr.jobManager._lastSyncNudgePeerCount)
+          : null,
+        lastSyncNudgeMinPeers: Number.isFinite(Number(mgr?.jobManager?._lastSyncNudgeMinPeers))
+          ? Number(mgr.jobManager._lastSyncNudgeMinPeers)
+          : null,
+        syncNudgeHistory: Array.isArray(mgr?.jobManager?._syncNudgeHistory)
+          ? mgr.jobManager._syncNudgeHistory.slice(-10)
+          : [],
         daemonUp:            mgr?.jobManager?._daemonUp === true,
         daemonLastError:     mgr?.jobManager?._daemonLastError || null,
         daemonLastOkAt:      mgr?.jobManager?._daemonLastOkAt || null
@@ -205,7 +253,7 @@ function getLivePoolStats(poolId) {
       totalBlocks:      ds.countBlocks(poolId),
       totalPaid:        Math.max(ds.totalPaid(poolId), confirmedRewards),
       blockReward:      coin.blockReward || 0,
-      blockRewardNote:  coin.blockRewardNote || '',
+      blockRewardNote:  buildRewardNote(coin, netInfo.blockHeight || jobInfo.height || 0),
       lastPoolBlockTime: null,
       poolEffort,
       poolFeePercent:   1,

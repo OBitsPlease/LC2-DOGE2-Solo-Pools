@@ -24,7 +24,7 @@ class RPCClient {
     return Buffer.from(cookie).toString('base64');
   }
 
-  _doRpcCall(body, authHeaderValue, allowCookieRetry) {
+  _doRpcCall(body, authHeaderValue, allowCookieRetry, timeoutMs = 10000) {
     return new Promise((resolve, reject) => {
       const req = http.request({
         host: this.host,
@@ -43,10 +43,10 @@ class RPCClient {
           if (res.statusCode === 401 && allowCookieRetry) {
             const cookieAuth = this._readCookieAuth();
             if (cookieAuth && cookieAuth !== authHeaderValue) {
-              return resolve(this._doRpcCall(body, cookieAuth, false));
+              return resolve(this._doRpcCall(body, cookieAuth, false, timeoutMs));
             }
             if (this.auth && this.auth !== authHeaderValue) {
-              return resolve(this._doRpcCall(body, this.auth, false));
+              return resolve(this._doRpcCall(body, this.auth, false, timeoutMs));
             }
           }
 
@@ -68,7 +68,7 @@ class RPCClient {
       });
 
       req.on('error', reject);
-      req.setTimeout(10000, () => {
+      req.setTimeout(timeoutMs, () => {
         req.destroy();
         reject(new Error('RPC timeout'));
       });
@@ -77,7 +77,11 @@ class RPCClient {
     });
   }
 
-  call(method, params = []) {
+  call(method, params = [], options = {}) {
+    const timeoutMs = Number.isFinite(Number(options.timeoutMs))
+      ? Number(options.timeoutMs)
+      : 10000;
+
     const body = JSON.stringify({
       jsonrpc: '1.0',
       id: this._id++,
@@ -87,7 +91,7 @@ class RPCClient {
 
     const initialAuth = this.preferCookieAuth ? (this._readCookieAuth() || this.auth) : this.auth;
 
-    return this._doRpcCall(body, initialAuth, true).catch(err => {
+    return this._doRpcCall(body, initialAuth, true, timeoutMs).catch(err => {
       if (err.message === 'RPC timeout') {
         throw new Error(`RPC timeout calling ${method}`);
       }
@@ -95,8 +99,19 @@ class RPCClient {
     });
   }
 
-  async getBlockTemplate(capabilities = ['coinbasetxn', 'workid', 'coinbase/append']) {
-    return this.call('getblocktemplate', [{ capabilities, rules: this._gbtRules }]);
+  async getBlockTemplate(options = {}) {
+    const capabilities = Array.isArray(options.capabilities)
+      ? options.capabilities
+      : ['coinbasetxn', 'workid', 'coinbase/append'];
+
+    const params = { capabilities, rules: this._gbtRules };
+    if (typeof options.longpollid === 'string' && options.longpollid.length > 0) {
+      params.longpollid = options.longpollid;
+    }
+
+    return this.call('getblocktemplate', [params], {
+      timeoutMs: Number.isFinite(Number(options.timeoutMs)) ? Number(options.timeoutMs) : 10000
+    });
   }
 
   async submitBlock(hexData) {

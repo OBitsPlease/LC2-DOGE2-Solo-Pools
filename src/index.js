@@ -157,16 +157,46 @@ function writePortChangeAlert(portChanges) {
   return alertPath;
 }
 
+function isPrivateIpv4(ip) {
+  const parts = String(ip || '').split('.').map(n => Number(n));
+  if (parts.length !== 4 || parts.some(n => !Number.isInteger(n) || n < 0 || n > 255)) {
+    return false;
+  }
+  if (parts[0] === 10) return true;
+  if (parts[0] === 192 && parts[1] === 168) return true;
+  if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true;
+  return false;
+}
+
 function getLanIpv4Address() {
   const interfaces = os.networkInterfaces();
-  for (const addresses of Object.values(interfaces)) {
+  const candidates = [];
+
+  for (const [name, addresses] of Object.entries(interfaces)) {
     for (const entry of addresses || []) {
-      if (entry && entry.family === 'IPv4' && !entry.internal) {
-        return entry.address;
-      }
+      if (!entry || entry.family !== 'IPv4' || entry.internal) continue;
+      if (!entry.address || entry.address.startsWith('169.254.')) continue;
+      candidates.push({ name: String(name || ''), ip: entry.address });
     }
   }
-  return '127.0.0.1';
+
+  if (candidates.length === 0) return '127.0.0.1';
+
+  // Prefer RFC1918 addresses on non-virtual adapters (Wi-Fi/Ethernet first).
+  candidates.sort((a, b) => {
+    const score = c => {
+      let s = 0;
+      const n = c.name.toLowerCase();
+      if (isPrivateIpv4(c.ip)) s += 100;
+      if (n.includes('wi-fi') || n.includes('wifi')) s += 30;
+      if (n.includes('ethernet')) s += 25;
+      if (/(vethernet|hyper-v|wsl|virtual|vmware|docker|tailscale|loopback|tunnel)/.test(n)) s -= 80;
+      return s;
+    };
+    return score(b) - score(a);
+  });
+
+  return candidates[0].ip;
 }
 
 function buildMinerConnectionInfo({ dashboardPort, startupCoins, portChanges = [] }) {
@@ -256,11 +286,39 @@ function reverseHex(hex) {
   return hex.match(/../g).reverse().join('');
 }
 
+function deriveScryptHeaderHashesFromBlockHex(blockHex) {
+  if (typeof blockHex !== 'string' || blockHex.length < 160) return null;
+  try {
+    const scrypt = require('scryptsy');
+    const headerHex = blockHex.slice(0, 160);
+    const headerBytes = Buffer.from(headerHex, 'hex');
+    const raw = scrypt(headerBytes, headerBytes, 1024, 1, 1, 32).toString('hex');
+    return {
+      raw,
+      display: reverseHex(raw)
+    };
+  } catch (_) {
+    return null;
+  }
+}
+
 async function tryGetBlockConfirmations(rpc, hashHex) {
   if (!hashHex || !/^[0-9a-fA-F]{64}$/.test(hashHex)) return null;
   try {
     const b = await rpc.call('getblock', [hashHex]);
     if (b && typeof b.confirmations === 'number') return b.confirmations;
+  } catch (_) {}
+  return null;
+}
+
+async function tryGetBlockHashAtHeight(rpc, height) {
+  const h = Number(height);
+  if (!Number.isFinite(h) || h <= 0) return null;
+  try {
+    const hash = await rpc.call('getblockhash', [Math.trunc(h)]);
+    if (typeof hash === 'string' && /^[0-9a-fA-F]{64}$/.test(hash)) {
+      return hash.toLowerCase();
+    }
   } catch (_) {}
   return null;
 }
@@ -276,10 +334,50 @@ async function monitorOrphansAndResubmit(running) {
     if (!instance || !instance.rpc) continue;
 
     let confirmations = null;
+    let derivedHashes = null;
     if (block.hash) {
       confirmations = await tryGetBlockConfirmations(instance.rpc, block.hash);
       if (confirmations === null) {
         confirmations = await tryGetBlockConfirmations(instance.rpc, reverseHex(block.hash));
+      }
+    }
+
+    if (confirmations === null && block.blockHex) {
+      const derived = deriveScryptHeaderHashesFromBlockHex(block.blockHex);
+      derivedHashes = derived;
+      if (derived) {
+        confirmations = await tryGetBlockConfirmations(instance.rpc, derived.display);
+        if (confirmations === null) {
+          confirmations = await tryGetBlockConfirmations(instance.rpc, derived.raw);
+        }
+      }
+    }
+
+    // If chain tip has a different hash at this height, this candidate is orphaned.
+    if (confirmations === null && Number.isFinite(Number(block.height)) && Number(block.height) > 0) {
+      const chainHashAtHeight = await tryGetBlockHashAtHeight(instance.rpc, Number(block.height));
+      if (chainHashAtHeight) {
+        const candidates = new Set();
+        const pushCandidate = (h) => {
+          if (typeof h === 'string' && /^[0-9a-fA-F]{64}$/.test(h)) {
+            candidates.add(h.toLowerCase());
+          }
+        };
+        pushCandidate(block.hash);
+        pushCandidate(reverseHex(block.hash || ''));
+        pushCandidate(derivedHashes?.display);
+        pushCandidate(derivedHashes?.raw);
+
+        if (candidates.size > 0 && !candidates.has(chainHashAtHeight)) {
+          writeOrphanEvent(`orphan-height-mismatch pool=${block.poolId} height=${block.height} chainHash=${chainHashAtHeight} candidateHash=${(block.hash || '').toLowerCase()}`);
+          ds.updateBlockRecord(block.poolId, block.height, block.created, {
+            status: 'orphaned',
+            confirmationProgress: 0,
+            orphanDetectedAt: new Date().toISOString(),
+            lastResubmitResult: 'height-mismatch'
+          });
+          continue;
+        }
       }
     }
 
@@ -308,6 +406,19 @@ async function monitorOrphansAndResubmit(running) {
 
     const chainHeight = instance?.jobMgr?._networkInfo?.blockHeight || 0;
     const ageMs = Date.now() - new Date(block.created || Date.now()).getTime();
+    // Guardrail: if a near-tip pending block hash cannot be found for hours,
+    // treat it as orphaned so dashboard status does not stall forever.
+    if (ageMs > 3 * 60 * 60 * 1000 && chainHeight > 0 && block.height > 0 && chainHeight - block.height >= 1) {
+      writeOrphanEvent(`orphan-hash-not-found-timeout pool=${block.poolId} height=${block.height} chainHeight=${chainHeight} ageMs=${ageMs}`);
+      ds.updateBlockRecord(block.poolId, block.height, block.created, {
+        status: 'orphaned',
+        confirmationProgress: 0,
+        orphanDetectedAt: new Date().toISOString(),
+        lastResubmitResult: 'hash-not-found-timeout'
+      });
+      continue;
+    }
+
     if (chainHeight > 0 && block.height > 0 && chainHeight - block.height >= 8 && ageMs > 10 * 60 * 1000) {
       writeOrphanEvent(`orphan-heuristic pool=${block.poolId} height=${block.height} chainHeight=${chainHeight} ageMs=${ageMs}`);
       ds.updateBlockRecord(block.poolId, block.height, block.created, {

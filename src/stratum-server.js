@@ -170,6 +170,38 @@ class StratumServer extends EventEmitter {
     jobManager.on('newJob', (job, cleanJobs) => {
       this._broadcastJob(job, cleanJobs);
     });
+
+    jobManager.on('syncState', ({ syncing, networkInfo, reason }) => {
+      if (syncing) {
+        this._pauseMiningForSync(networkInfo, reason);
+      }
+    });
+  }
+
+  _pauseMiningForSync(networkInfo = {}, reason = 'syncing') {
+    const behind = Number.isFinite(Number(networkInfo.blocksBehind)) ? Number(networkInfo.blocksBehind) : null;
+    const verification = Number.isFinite(Number(networkInfo.verificationProgress))
+      ? Number(networkInfo.verificationProgress)
+      : null;
+    writeDiagnosticLog('stratum-sync-pause', {
+      symbol: this.config.symbol,
+      reason,
+      connectedClients: this.clients.size,
+      blocksBehind: behind,
+      verificationProgress: verification,
+      initialBlockDownload: !!networkInfo.initialBlockDownload
+    });
+
+    // Hard safety: disconnect miners while node is behind so no stale/off-tip
+    // job can continue hashing in firmware caches.
+    for (const [, client] of this.clients) {
+      try {
+        client.sendError(null, 21, 'Node syncing to tip');
+      } catch (_) {}
+      client.destroy();
+    }
+
+    console.log(`[${this.config.symbol}] Node syncing to tip — disconnected miners until caught up`);
   }
 
   start() {
@@ -408,6 +440,25 @@ class StratumServer extends EventEmitter {
     }
   }
 
+  async _isCandidateOnCurrentTip(job) {
+    const height = Number(job?.height || 0);
+    const expectedPrev = String(job?.template?.previousblockhash || '').toLowerCase();
+    if (!height || !expectedPrev || !/^[0-9a-f]{64}$/.test(expectedPrev)) {
+      return true;
+    }
+
+    // Validate candidate parent against daemon tip-at-height to avoid submitting
+    // blocks from an old branch when local node was briefly behind or reorged.
+    try {
+      const chainPrev = await this.jobManager.rpc.call('getblockhash', [height - 1]);
+      const chainPrevNorm = String(chainPrev || '').toLowerCase();
+      return chainPrevNorm === expectedPrev;
+    } catch (_) {
+      // If this probe fails, do not block submission solely on probe failure.
+      return true;
+    }
+  }
+
   _handleAuthorize(client, id, params) {
     this._methodCounts['mining.authorize'] = (this._methodCounts['mining.authorize'] || 0) + 1;
     if (!Array.isArray(params) || params.length < 1) {
@@ -469,7 +520,7 @@ class StratumServer extends EventEmitter {
     );
 
     if (!result.valid) {
-      if (result.error === 'Job not found') {
+      if (result.error === 'Job not found' || result.error === 'Stale share' || result.error === 'Node syncing to tip') {
         // Stale share from an old job: force miner resync with a clean job.
         console.log(`[${this.config.symbol}] Stale share (old job) from ${workerName} — forcing resync`);
         client._consecutiveStaleShares = (client._consecutiveStaleShares || 0) + 1;
@@ -562,9 +613,46 @@ class StratumServer extends EventEmitter {
 
     if (result.meetsDifficulty) {
       const blen = result.blockHex ? result.blockHex.length : 0;
+      const foundAtMs = Date.now();
       console.log(`[${this.config.symbol}] *** BLOCK FOUND by ${workerName}! Submitting... hexLen=${blen} tail40=${result.blockHex ? result.blockHex.slice(-40) : '(null)'}`);
       try {
+        const latestJob = this.jobManager.currentJob;
+        const sameTip = await this._isCandidateOnCurrentTip(latestJob);
+        if (!sameTip) {
+          writeDiagnosticLog('candidate-dropped-stale-tip', {
+            symbol: this.config.symbol,
+            workerName,
+            candidateHeight: latestJob?.height || null,
+            candidatePrevHash: latestJob?.template?.previousblockhash || null,
+            currentJobId: latestJob?.id || null
+          });
+          client.staleShares++;
+          this._staleShares++;
+          this._lastRejectReason = 'Stale share';
+          const currentJob = this.jobManager.currentJob;
+          if (currentJob && client.subscribed) {
+            client.sendNotify(this.jobManager.getNotifyParams(currentJob, true));
+          }
+          return client.sendError(id, 21, 'Stale share');
+        }
+
+        const submitStartMs = Date.now();
         const submitResult = await this.jobManager.rpc.submitBlock(result.blockHex);
+        const submitEndMs = Date.now();
+        const submitDurationMs = submitEndMs - submitStartMs;
+        const foundToSubmitMs = submitStartMs - foundAtMs;
+
+        writeDiagnosticLog('block-submit-timing', {
+          symbol: this.config.symbol,
+          workerName,
+          height: this.jobManager.currentJob?.height || null,
+          foundToSubmitMs,
+          submitDurationMs,
+          connectedPeers: this.jobManager?._networkInfo?.connectedPeers || 0,
+          blocksBehind: this.jobManager?._networkInfo?.blocksBehind,
+          blockHashDisplay: result.hashDisplayHex || null
+        });
+
         if (submitResult === null || submitResult === undefined) {
           console.log(`[${this.config.symbol}] *** BLOCK ACCEPTED! ***`);
           this._blocksFound++;
@@ -572,13 +660,16 @@ class StratumServer extends EventEmitter {
             symbol: this.config.symbol,
             workerName,
             height: this.jobManager.currentJob?.height || null,
-            connectedClients: this.clients.size
+            connectedClients: this.clients.size,
+            submitDurationMs,
+            foundToSubmitMs,
+            blockHashDisplay: result.hashDisplayHex || null
           });
           this.emit('blockFound', {
             workerName,
             coin: this.config.symbol,
             blockHex: result.blockHex,
-            hashHex: result.hashHex || null,
+            hashHex: result.hashDisplayHex || result.hashHex || null,
             height: this.jobManager.currentJob?.height || null
           });
         } else {
@@ -589,7 +680,10 @@ class StratumServer extends EventEmitter {
             height: this.jobManager.currentJob?.height || null,
             result: String(submitResult),
             connectedClients: this.clients.size,
-            hashHex: result.hashHex || null
+            hashHex: result.hashHex || null,
+            hashDisplayHex: result.hashDisplayHex || null,
+            submitDurationMs,
+            foundToSubmitMs
           });
         }
       } catch (err) {

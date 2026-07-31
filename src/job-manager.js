@@ -90,6 +90,10 @@ class JobManager extends EventEmitter {
     // Seed job counter from timestamp so restarts don't reuse old job IDs
     this._jobCounter = Math.floor(Date.now() / 1000) & 0xffffff;
     this._pollTimer = null;
+    this._pollInFlight = false;
+    this._queuedPollTemplate = null;
+    this._longpollActive = false;
+    this._longpollPromise = null;
     this._lastBlockHash = null;
     this._shareCount = 0;
     this._shareWindow = []; // { ts, diff } for hashrate estimation
@@ -100,6 +104,13 @@ class JobManager extends EventEmitter {
     this._daemonLastError = null;
     this._daemonLastOkAt = null;
     this._lastTemplate = null;
+    this._syncPaused = false;
+    this._lastSyncNudgeAt = 0;
+    this._lastSyncLogAt = 0;
+    this._lastSyncNudgeActions = [];
+    this._lastSyncNudgePeerCount = null;
+    this._lastSyncNudgeMinPeers = null;
+    this._syncNudgeHistory = [];
     // Merge mining: set when this chain is the PARENT (LC2)
     this._auxJobMgr = null;         // DOGE2 JobManager instance
     this._currentAuxData = null;    // latest DOGE2 template + header bytes
@@ -116,17 +127,162 @@ class JobManager extends EventEmitter {
     this._parentJobMgr = null;      // LC2 JobManager instance (for hashrate passthrough)
   }
 
+  _isSyncingToTip(networkInfo = {}) {
+    const blocksBehind = Number(networkInfo.blocksBehind);
+    const ibd = !!networkInfo.initialBlockDownload;
+    const verification = Number(networkInfo.verificationProgress || 0);
+    if (ibd) return true;
+    if (Number.isFinite(blocksBehind) && blocksBehind > 0) return true;
+    // If we can compute blocksBehind and it's zero, treat as tip-synced.
+    if (Number.isFinite(blocksBehind) && blocksBehind === 0) return false;
+    // Fallback only when blocksBehind is unavailable.
+    return verification > 0 && verification < 0.999;
+  }
+
+  async _nudgeSync(networkInfo = {}) {
+    const now = Date.now();
+    if ((now - this._lastSyncNudgeAt) < 30000) return;
+    this._lastSyncNudgeAt = now;
+
+    const blocksBehind = Number(networkInfo.blocksBehind || 0);
+    const verification = Number(networkInfo.verificationProgress || 0);
+    const actions = [];
+    let peerCount = null;
+    let attemptedOnetry = 0;
+
+    try {
+      await this.rpc.call('setnetworkactive', [true]);
+      actions.push('setnetworkactive:true');
+    } catch (_) {}
+
+    try {
+      const peers = await this.rpc.call('getpeerinfo').catch(() => []);
+      peerCount = Array.isArray(peers) ? peers.length : 0;
+    } catch (_) {
+      peerCount = null;
+    }
+
+    const minPeers = Number.isFinite(Number(this.coin.syncMinPeers))
+      ? Math.max(1, Number(this.coin.syncMinPeers))
+      : 3;
+
+    if (peerCount === null || peerCount < minPeers) {
+      try {
+        const candidates = await this.rpc.call('getnodeaddresses', [64]).catch(() => []);
+        const pool = Array.isArray(candidates) ? candidates : [];
+        const usable = pool
+          .map(n => (n && typeof n.address === 'string') ? n.address.trim() : '')
+          .filter(Boolean)
+          .slice(0, 12);
+
+        for (const addr of usable) {
+          try {
+            await this.rpc.call('addnode', [addr, 'onetry']);
+            attemptedOnetry++;
+          } catch (_) {}
+        }
+      } catch (_) {}
+    }
+
+    if (attemptedOnetry > 0) {
+      actions.push(`addnode:onetry:${attemptedOnetry}`);
+    }
+
+    this._lastSyncNudgeActions = actions;
+    this._lastSyncNudgePeerCount = peerCount;
+    this._lastSyncNudgeMinPeers = minPeers;
+    this._pushSyncHistory({
+      type: 'nudge',
+      at: new Date(now).toISOString(),
+      blocksBehind,
+      verificationProgress: verification,
+      initialBlockDownload: !!networkInfo.initialBlockDownload,
+      peerCount,
+      minPeers,
+      actions
+    });
+
+    writeDiagnosticLog('sync-nudge', {
+      symbol: this.coin.symbol,
+      blocksBehind,
+      verificationProgress: verification,
+      initialBlockDownload: !!networkInfo.initialBlockDownload,
+      peerCount,
+      minPeers,
+      actions,
+      at: new Date(now).toISOString()
+    });
+  }
+
+  _pushSyncHistory(entry) {
+    if (!entry || typeof entry !== 'object') return;
+    this._syncNudgeHistory.push(entry);
+    if (this._syncNudgeHistory.length > 20) {
+      this._syncNudgeHistory = this._syncNudgeHistory.slice(-20);
+    }
+  }
+
   start() {
     this._poll();
-    // Poll every 5 seconds for new blocks
-    this._pollTimer = setInterval(() => this._poll(), 5000);
-    console.log(`[${this.coin.symbol}] JobManager started, polling every 5s`);
+    const pollMs = Number.isFinite(Number(this.coin.templatePollMs)) && Number(this.coin.templatePollMs) >= 500
+      ? Number(this.coin.templatePollMs)
+      : 5000;
+    this._pollTimer = setInterval(() => this._poll(), pollMs);
+    console.log(`[${this.coin.symbol}] JobManager started, polling every ${pollMs}ms`);
+
+    if (this.coin.enableLongpoll !== false) {
+      this._startLongpollLoop();
+    }
   }
 
   stop() {
     if (this._pollTimer) {
       clearInterval(this._pollTimer);
       this._pollTimer = null;
+    }
+    this._longpollActive = false;
+  }
+
+  _startLongpollLoop() {
+    if (this._longpollActive) return;
+    this._longpollActive = true;
+    this._longpollPromise = this._longpollLoop();
+  }
+
+  async _longpollLoop() {
+    const longpollTimeoutMs = Number.isFinite(Number(this.coin.longpollTimeoutMs))
+      ? Number(this.coin.longpollTimeoutMs)
+      : 70000;
+
+    while (this._longpollActive) {
+      try {
+        const lpId = this.currentJob?.template?.longpollid || this._lastTemplate?.longpollid || null;
+        const template = await this.rpc.getBlockTemplate({
+          longpollid: lpId,
+          timeoutMs: longpollTimeoutMs
+        });
+
+        if (!this._longpollActive) break;
+
+        if (template && template.previousblockhash) {
+          const changedPrevHash = template.previousblockhash !== this._lastBlockHash;
+          if (changedPrevHash) {
+            writeDiagnosticLog('template-longpoll-wakeup', {
+              symbol: this.coin.symbol,
+              height: template.height || null,
+              previousblockhash: template.previousblockhash
+            });
+          }
+          this._poll(template);
+        }
+      } catch (err) {
+        if (!this._longpollActive) break;
+        writeDiagnosticLog('template-longpoll-error', {
+          symbol: this.coin.symbol,
+          error: err.message
+        });
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
     }
   }
 
@@ -187,14 +343,22 @@ class JobManager extends EventEmitter {
     };
   }
 
-  async _poll() {
+  async _poll(preloadedTemplate = null) {
+    if (this._pollInFlight) {
+      if (preloadedTemplate) this._queuedPollTemplate = preloadedTemplate;
+      return;
+    }
+
+    this._pollInFlight = true;
     try {
-      let template = null;
-      try {
-        template = await this.rpc.getBlockTemplate();
-      } catch (err) {
-        // Keep polling telemetry even if template is temporarily unavailable.
-        template = null;
+      let template = preloadedTemplate;
+      if (!template) {
+        try {
+          template = await this.rpc.getBlockTemplate();
+        } catch (err) {
+          // Keep polling telemetry even if template is temporarily unavailable.
+          template = null;
+        }
       }
 
       // Fetch network/sync telemetry for dashboard status.
@@ -255,6 +419,70 @@ class JobManager extends EventEmitter {
 
       if (!template) return;
 
+      // Never mine off-tip for the parent chain. Pause job issuance while syncing,
+      // but actively nudge peer sync so the node catches up faster.
+      const shouldPauseForSync = this.coin.symbol === 'LC2' && this._isSyncingToTip(this._networkInfo);
+      if (shouldPauseForSync) {
+        await this._nudgeSync(this._networkInfo);
+        if (!this._syncPaused) {
+          this._syncPaused = true;
+          this.currentJob = null;
+          this.jobs.clear();
+          this.emit('syncState', {
+            syncing: true,
+            networkInfo: this._networkInfo,
+            reason: 'behind-tip'
+          });
+          this._pushSyncHistory({
+            type: 'pause',
+            at: new Date().toISOString(),
+            blocksBehind: Number(this._networkInfo.blocksBehind || 0),
+            verificationProgress: Number(this._networkInfo.verificationProgress || 0),
+            initialBlockDownload: !!this._networkInfo.initialBlockDownload,
+            reason: 'behind-tip'
+          });
+          writeDiagnosticLog('sync-pause-mining', {
+            symbol: this.coin.symbol,
+            blocksBehind: this._networkInfo.blocksBehind,
+            verificationProgress: this._networkInfo.verificationProgress,
+            initialBlockDownload: this._networkInfo.initialBlockDownload
+          });
+        }
+
+        const now = Date.now();
+        if ((now - this._lastSyncLogAt) > 30000) {
+          this._lastSyncLogAt = now;
+          const b = Number(this._networkInfo.blocksBehind || 0);
+          const v = Number(this._networkInfo.verificationProgress || 0);
+          console.log(`[${this.coin.symbol}] Syncing to tip (behind=${b}, verification=${(v * 100).toFixed(3)}%) — mining paused`);
+        }
+        return;
+      }
+
+      if (this._syncPaused) {
+        this._syncPaused = false;
+        this.emit('syncState', {
+          syncing: false,
+          networkInfo: this._networkInfo,
+          reason: 'caught-up'
+        });
+        this._pushSyncHistory({
+          type: 'resume',
+          at: new Date().toISOString(),
+          blocksBehind: Number(this._networkInfo.blocksBehind || 0),
+          verificationProgress: Number(this._networkInfo.verificationProgress || 0),
+          initialBlockDownload: !!this._networkInfo.initialBlockDownload,
+          reason: 'caught-up'
+        });
+        writeDiagnosticLog('sync-resume-mining', {
+          symbol: this.coin.symbol,
+          blocksBehind: this._networkInfo.blocksBehind,
+          verificationProgress: this._networkInfo.verificationProgress,
+          initialBlockDownload: this._networkInfo.initialBlockDownload
+        });
+        console.log(`[${this.coin.symbol}] Tip caught up — mining resumed`);
+      }
+
       const newBlockHash = template.previousblockhash;
       const isNewBlock = newBlockHash !== this._lastBlockHash;
 
@@ -295,6 +523,13 @@ class JobManager extends EventEmitter {
       this._daemonUp = false;
       this._daemonLastError = err.message;
       console.error(`[${this.coin.symbol}] job poll failed: ${err.message}`);
+    } finally {
+      this._pollInFlight = false;
+      if (this._queuedPollTemplate) {
+        const queued = this._queuedPollTemplate;
+        this._queuedPollTemplate = null;
+        setImmediate(() => this._poll(queued));
+      }
     }
   }
 
@@ -414,11 +649,29 @@ class JobManager extends EventEmitter {
    * Returns: { valid: bool, meetsDifficulty: bool, blockHex?: string, error?: string }
    */
   processShare(jobId, extraNonce1Hex, extraNonce2Hex, ntime, nonce, workerName, sharesDiff = 1, submittedVersion = null) {
+    if (this._syncPaused) {
+      return { valid: false, error: 'Node syncing to tip' };
+    }
+
     const job = this.jobs.get(jobId);
     if (!job) {
       const knownIds = [...this.jobs.keys()].join(', ');
       console.log(`[${this.coin.symbol}] Job not found: submitted="${jobId}" known=[${knownIds}]`);
       return { valid: false, error: 'Job not found' };
+    }
+
+    // Reject submissions for jobs that are no longer on the active chain tip.
+    // This reduces accepted stale candidates when miners keep old templates.
+    if (this.currentJob) {
+      const currentHeight = Number(this.currentJob.height || 0);
+      const jobHeight = Number(job.height || 0);
+      const currentPrev = String(this.currentJob.template?.previousblockhash || '').toLowerCase();
+      const jobPrev = String(job.template?.previousblockhash || '').toLowerCase();
+      const heightWentForward = Number.isFinite(currentHeight) && Number.isFinite(jobHeight) && jobHeight > 0 && currentHeight > 0 && jobHeight < currentHeight;
+      const prevhashChanged = currentPrev && jobPrev && currentPrev !== jobPrev;
+      if (heightWentForward || prevhashChanged) {
+        return { valid: false, error: 'Stale share' };
+      }
     }
 
     // Reconstruct the full coinbase txid (natural = internal byte order, no reversal)
@@ -453,6 +706,7 @@ class JobManager extends EventEmitter {
     }
 
     const normalizedShareDiff = Math.max(1, Math.trunc(Number(sharesDiff) || 1));
+    const hashDisplayHex = Buffer.from(hashHex, 'hex').reverse().toString('hex');
     const shareTarget = SHARE_DIFF1_TARGET / BigInt(normalizedShareDiff);
 
     // Check if hash meets client share difficulty first.
@@ -679,6 +933,7 @@ class JobManager extends EventEmitter {
           valid: true,
           meetsDifficulty: false,
           hashHex: variantHashHex || hashHex,
+          hashDisplayHex,
           diag: {
             compatAccepted: true,
             compatVariant: variantPass,
@@ -698,6 +953,7 @@ class JobManager extends EventEmitter {
         valid: false,
         error: 'Low difficulty share',
         hashHex,
+        hashDisplayHex,
         diag: {
           runDeepDiagnostics,
           meetsShareDifficultyNoReverse,
@@ -751,11 +1007,11 @@ class JobManager extends EventEmitter {
       // Build full block for submission
       const blockHex = this._buildBlockHex(job, extraNonce1Hex, extraNonce2Hex, header);
       this._recordShare(normalizedShareDiff);
-      return { valid: true, meetsDifficulty: true, blockHex, hashHex };
+      return { valid: true, meetsDifficulty: true, blockHex, hashHex, hashDisplayHex };
     }
 
     this._recordShare(normalizedShareDiff);
-    return { valid: true, meetsDifficulty: false, hashHex };
+    return { valid: true, meetsDifficulty: false, hashHex, hashDisplayHex };
   }
 
   _buildBlockHex(job, extraNonce1Hex, extraNonce2Hex, header) {
