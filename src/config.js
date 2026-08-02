@@ -47,6 +47,9 @@ const coins = {
 
     // LC2 daemon RPC connection (from chainparamsbase.cpp: RPC=9222, P2P=9223)
     // LC2 is based on Litecoin 0.21 — requires mweb rule in getblocktemplate
+    // v0.21.6.0 is mandatory because it activates LWMA consensus rules.
+    minimumDaemonVersion: 210600,
+    minimumDaemonVersionLabel: '0.21.6.0',
     rpc: {
       host: '127.0.0.1',
       port: 9222,
@@ -76,11 +79,11 @@ const coins = {
     name: 'Dogecoin2',
     color: '#c2a633',
     logo: 'doge2-logo.png',
-    blockReward: 500000,  // 500,000 DOGE2/block (early randomized phase)
-    blockRewardNote: 'Current reward: 500,000 DOGE2 per block.',
+    blockReward: 250000,
+    blockRewardNote: 'Current reward: 250,000 DOGE2 per block.',
     rewardSchedule: {
-      nextReward: 250000,
-      halvingHeight: 100002,
+      nextReward: 125000,
+      halvingHeight: 200000,
       blockIntervalSecs: 60
     },
     coinPrice: 0.00000037, // DC2/USDT on NestEx — update manually: https://trade.nestex.one/spot/DC2
@@ -123,7 +126,7 @@ const coins = {
 };
 
 module.exports = {
-  appVersion: '2.0.5',
+  appVersion: '2.0.6',
   coins,
   dashboard: {
     port: 8081   // web dashboard port (8080 is used by existing dashboard)

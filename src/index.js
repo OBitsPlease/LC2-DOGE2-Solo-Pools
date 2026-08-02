@@ -18,7 +18,9 @@ const StratumServer   = require('./stratum-server');
 const config          = require('./config');
 const dashboardServer = require('./dashboard-server');
 const ds              = require('./data-store');
+const { BlockAlertService } = require('./block-alert-service');
 const { writeDiagnosticLog } = require('./diagnostic-logger');
+const { dsha256 }      = require('./utils');
 const net             = require('net');
 const os              = require('os');
 const path            = require('path');
@@ -44,6 +46,24 @@ function resolveAppVersion() {
 
 const ORPHAN_LOG_DIR = path.join(path.dirname(ds.getDataDir()), 'logs');
 const ORPHAN_EVENT_LOG = path.join(ORPHAN_LOG_DIR, 'orphan-events.log');
+const blockAlerts = new BlockAlertService({ dataDir: ds.getDataDir() });
+
+function reportLc2BlockEvent(eventType, details) {
+  blockAlerts.report(eventType, details).then(result => {
+    if (result.sent) {
+      console.log(`[LC2] Discord block alert sent: ${eventType} height=${details.height || 0}`);
+    } else if (result.error) {
+      console.error(`[LC2] Discord block alert failed: ${result.error}`);
+    }
+  }).catch(error => {
+    console.error(`[LC2] Block evidence capture failed: ${error.message}`);
+  });
+}
+
+function reportLc2BlockStatus(eventType, block, updates = {}) {
+  if (block?.poolId !== 'lc2_solo1') return;
+  reportLc2BlockEvent(eventType, { ...block, ...updates });
+}
 
 function writeOrphanEvent(msg) {
   try {
@@ -286,16 +306,19 @@ function reverseHex(hex) {
   return hex.match(/../g).reverse().join('');
 }
 
-function deriveScryptHeaderHashesFromBlockHex(blockHex) {
+function deriveHeaderHashesFromBlockHex(blockHex) {
   if (typeof blockHex !== 'string' || blockHex.length < 160) return null;
   try {
     const scrypt = require('scryptsy');
     const headerHex = blockHex.slice(0, 160);
     const headerBytes = Buffer.from(headerHex, 'hex');
-    const raw = scrypt(headerBytes, headerBytes, 1024, 1, 1, 32).toString('hex');
+    const powRaw = scrypt(headerBytes, headerBytes, 1024, 1, 1, 32).toString('hex');
+    const canonicalRaw = dsha256(headerBytes).toString('hex');
     return {
-      raw,
-      display: reverseHex(raw)
+      canonicalRaw,
+      canonicalDisplay: reverseHex(canonicalRaw),
+      powRaw,
+      powDisplay: reverseHex(powRaw)
     };
   } catch (_) {
     return null;
@@ -343,12 +366,12 @@ async function monitorOrphansAndResubmit(running) {
     }
 
     if (confirmations === null && block.blockHex) {
-      const derived = deriveScryptHeaderHashesFromBlockHex(block.blockHex);
+      const derived = deriveHeaderHashesFromBlockHex(block.blockHex);
       derivedHashes = derived;
       if (derived) {
-        confirmations = await tryGetBlockConfirmations(instance.rpc, derived.display);
+        confirmations = await tryGetBlockConfirmations(instance.rpc, derived.canonicalDisplay);
         if (confirmations === null) {
-          confirmations = await tryGetBlockConfirmations(instance.rpc, derived.raw);
+          confirmations = await tryGetBlockConfirmations(instance.rpc, derived.canonicalRaw);
         }
       }
     }
@@ -365,16 +388,22 @@ async function monitorOrphansAndResubmit(running) {
         };
         pushCandidate(block.hash);
         pushCandidate(reverseHex(block.hash || ''));
-        pushCandidate(derivedHashes?.display);
-        pushCandidate(derivedHashes?.raw);
+        pushCandidate(derivedHashes?.canonicalDisplay);
+        pushCandidate(derivedHashes?.canonicalRaw);
 
         if (candidates.size > 0 && !candidates.has(chainHashAtHeight)) {
           writeOrphanEvent(`orphan-height-mismatch pool=${block.poolId} height=${block.height} chainHash=${chainHashAtHeight} candidateHash=${(block.hash || '').toLowerCase()}`);
-          ds.updateBlockRecord(block.poolId, block.height, block.created, {
+          const updates = {
             status: 'orphaned',
             confirmationProgress: 0,
             orphanDetectedAt: new Date().toISOString(),
             lastResubmitResult: 'height-mismatch'
+          };
+          ds.updateBlockRecord(block.poolId, block.height, block.created, updates);
+          reportLc2BlockStatus('orphaned', block, {
+            ...updates,
+            reason: `Chain height ${block.height} contains a different hash`,
+            chainHashAtHeight
           });
           continue;
         }
@@ -384,10 +413,16 @@ async function monitorOrphansAndResubmit(running) {
     if (typeof confirmations === 'number') {
       if (confirmations < 0) {
         writeOrphanEvent(`orphan-detected pool=${block.poolId} height=${block.height} confirmations=${confirmations}`);
-        ds.updateBlockRecord(block.poolId, block.height, block.created, {
+        const updates = {
           status: 'orphaned',
           confirmationProgress: 0,
           orphanDetectedAt: new Date().toISOString()
+        };
+        ds.updateBlockRecord(block.poolId, block.height, block.created, updates);
+        reportLc2BlockStatus('orphaned', block, {
+          ...updates,
+          confirmations,
+          reason: 'Daemon reported negative confirmations'
         });
       } else if (confirmations === 0) {
         ds.updateBlockRecord(block.poolId, block.height, block.created, {
@@ -395,11 +430,13 @@ async function monitorOrphansAndResubmit(running) {
           confirmationProgress: 0
         });
       } else {
-        ds.updateBlockRecord(block.poolId, block.height, block.created, {
+        const updates = {
           status: 'confirmed',
           confirmationProgress: Math.min(100, confirmations),
           confirmations
-        });
+        };
+        ds.updateBlockRecord(block.poolId, block.height, block.created, updates);
+        reportLc2BlockStatus('confirmed', block, updates);
       }
       continue;
     }
@@ -410,21 +447,35 @@ async function monitorOrphansAndResubmit(running) {
     // treat it as orphaned so dashboard status does not stall forever.
     if (ageMs > 3 * 60 * 60 * 1000 && chainHeight > 0 && block.height > 0 && chainHeight - block.height >= 1) {
       writeOrphanEvent(`orphan-hash-not-found-timeout pool=${block.poolId} height=${block.height} chainHeight=${chainHeight} ageMs=${ageMs}`);
-      ds.updateBlockRecord(block.poolId, block.height, block.created, {
+      const updates = {
         status: 'orphaned',
         confirmationProgress: 0,
         orphanDetectedAt: new Date().toISOString(),
         lastResubmitResult: 'hash-not-found-timeout'
+      };
+      ds.updateBlockRecord(block.poolId, block.height, block.created, updates);
+      reportLc2BlockStatus('orphaned', block, {
+        ...updates,
+        reason: 'Candidate hash was not found after the three-hour timeout',
+        chainHeight,
+        ageMs
       });
       continue;
     }
 
     if (chainHeight > 0 && block.height > 0 && chainHeight - block.height >= 8 && ageMs > 10 * 60 * 1000) {
       writeOrphanEvent(`orphan-heuristic pool=${block.poolId} height=${block.height} chainHeight=${chainHeight} ageMs=${ageMs}`);
-      ds.updateBlockRecord(block.poolId, block.height, block.created, {
+      const updates = {
         status: 'orphaned',
         confirmationProgress: 0,
         orphanDetectedAt: new Date().toISOString()
+      };
+      ds.updateBlockRecord(block.poolId, block.height, block.created, updates);
+      reportLc2BlockStatus('orphaned', block, {
+        ...updates,
+        reason: 'Candidate remained absent after eight additional chain blocks',
+        chainHeight,
+        ageMs
       });
     }
 
@@ -443,12 +494,21 @@ async function monitorOrphansAndResubmit(running) {
 
     const accepted = submitErr === null && (submitResult === null || submitResult === undefined || submitResult === '' || String(submitResult).toLowerCase().includes('duplicate'));
 
-    ds.updateBlockRecord(latest.poolId, latest.height, latest.created, {
+    const resubmitUpdates = {
       status: accepted ? 'pending' : 'orphaned',
       resubmitAttempts: attempts,
       lastResubmitAt: new Date().toISOString(),
       lastResubmitResult: submitErr ? `error:${submitErr}` : String(submitResult)
-    });
+    };
+    ds.updateBlockRecord(latest.poolId, latest.height, latest.created, resubmitUpdates);
+
+    if (accepted) {
+      reportLc2BlockStatus('resubmitted', latest, {
+        ...resubmitUpdates,
+        attempt: attempts,
+        reason: 'Orphan candidate was accepted/queued for another chain check'
+      });
+    }
 
     const sym = instance.cfg?.symbol || coinKey.toUpperCase();
     writeOrphanEvent(`resubmit pool=${latest.poolId} symbol=${sym} height=${latest.height} attempt=${attempts} accepted=${accepted} result=${submitErr || submitResult}`);
@@ -523,7 +583,7 @@ async function startCoin(key, cfg) {
     const reward = jobMgr.currentJob?.template?.coinbasevalue
       ? jobMgr.currentJob.template.coinbasevalue / 1e8 : 0;
     console.log(`\n🎉 *** BLOCK FOUND *** ${cfg.symbol} by ${workerName} at height ${height}\n`);
-    ds.addBlock({
+    const blockRecord = ds.addBlock({
       poolId,
       height,
       hash: hashHex || jobMgr._lastBlockHash || '',
@@ -536,6 +596,13 @@ async function startCoin(key, cfg) {
       blockHex,
       resubmitAttempts: 0
     });
+    if (key === 'lc2') {
+      reportLc2BlockEvent('accepted', {
+        ...blockRecord,
+        networkInfo: jobMgr._networkInfo || null,
+        connectedMiners: stratum.getMiners().length
+      });
+    }
     // Take a performance snapshot at block time
     ds.addPerfSnapshot({
       poolId,
@@ -545,6 +612,16 @@ async function startCoin(key, cfg) {
       workers:           Object.fromEntries(
         stratum.getMiners().map(m => [m.workerName, { hashrate: m.hashrate || 0 }])
       )
+    });
+  });
+
+  stratum.on('blockRejected', event => {
+    if (key !== 'lc2') return;
+    reportLc2BlockEvent(event.eventType || 'rejected', {
+      poolId,
+      ...event,
+      networkInfo: jobMgr._networkInfo || null,
+      connectedMiners: stratum.getMiners().length
     });
   });
 

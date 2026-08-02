@@ -43,6 +43,7 @@ Source: "..\..\watchdog.ps1"; DestDir: "{app}"; DestName: "watchdog-{#AppVersion
 Source: "..\..\bin\windows\start-miner-stack.ps1"; DestDir: "{app}\bin\windows"; Flags: ignoreversion
 Source: "..\..\bin\windows\start-miner-stack.ps1"; DestDir: "{app}\bin\windows"; DestName: "start-miner-stack-{#AppVersion}.ps1"; Flags: ignoreversion
 Source: "..\..\TESTER-MINING-SETUP.txt"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\..\DISCORD-BLOCK-ALERTS.txt"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\data\doge2-bootstrap-nodes.txt"; DestDir: "{app}\data"; Flags: ignoreversion
 Source: "..\..\src\*"; DestDir: "{app}\src"; Flags: ignoreversion recursesubdirs createallsubdirs

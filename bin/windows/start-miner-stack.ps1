@@ -564,8 +564,8 @@ Merged Mining (AuxPoW):
 
 Block Rewards:
     LC2   -> 50 LC2 per block
-    DOGE2 -> 500,000 DOGE2 per block
-    DOGE2 halving in roughly 53 days -> 250,000 DOGE2 per block
+    DOGE2 -> 250,000 DOGE2 per block
+    DOGE2 next halving at height 200,000 -> 125,000 DOGE2 per block
 
 Launch Selection:
     LC2 enabled:   $($selection.lc2)

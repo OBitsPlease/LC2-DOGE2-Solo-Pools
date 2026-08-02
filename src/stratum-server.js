@@ -14,6 +14,10 @@ function nextExtraNonce1() {
   return buf.toString('hex');
 }
 
+function isLoopbackAddress(address) {
+  return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
+}
+
 // ─── VarDiff constants ─────────────────────────────────────────────────────
 const VARDIFF_TARGET_SECS  = 15;   // aim for 1 share every 15 seconds
 const VARDIFF_RETARGET_MS  = 60000; // re-evaluate every 60 seconds
@@ -323,7 +327,9 @@ class StratumServer extends EventEmitter {
     const client = new StratumClient(socket, id);
     this.clients.set(id, client);
     this._peakClients = Math.max(this._peakClients, this.clients.size);
-    console.log(`[${this.config.symbol}] Miner connected: ${socket.remoteAddress}:${socket.remotePort} (id=${id})`);
+    if (!isLoopbackAddress(remoteIp)) {
+      console.log(`[${this.config.symbol}] Miner connected: ${socket.remoteAddress}:${socket.remotePort} (id=${id})`);
+    }
     writeDiagnosticLog('client-connected', {
       symbol: this.config.symbol,
       clientId: id,
@@ -341,7 +347,9 @@ class StratumServer extends EventEmitter {
     });
     client.on('disconnect', () => {
       this.clients.delete(id);
-      console.log(`[${this.config.symbol}] Miner disconnected (id=${id}, worker=${client.workerName || 'unknown'})`);
+      if (client.authorized || !isLoopbackAddress(remoteIp)) {
+        console.log(`[${this.config.symbol}] Miner disconnected (id=${id}, worker=${client.workerName || 'unknown'})`);
+      }
       writeDiagnosticLog('client-disconnected', {
         symbol: this.config.symbol,
         clientId: id,
@@ -633,6 +641,14 @@ class StratumServer extends EventEmitter {
           if (currentJob && client.subscribed) {
             client.sendNotify(this.jobManager.getNotifyParams(currentJob, true));
           }
+          this.emit('blockRejected', {
+            eventType: 'rejected',
+            reason: 'Candidate was stale before submission',
+            workerName,
+            height: latestJob?.height || null,
+            hashHex: result.hashDisplayHex || result.hashHex || null,
+            blockHex: result.blockHex || null
+          });
           return client.sendError(id, 21, 'Stale share');
         }
 
@@ -650,7 +666,8 @@ class StratumServer extends EventEmitter {
           submitDurationMs,
           connectedPeers: this.jobManager?._networkInfo?.connectedPeers || 0,
           blocksBehind: this.jobManager?._networkInfo?.blocksBehind,
-          blockHashDisplay: result.hashDisplayHex || null
+          blockHashDisplay: result.blockHashDisplayHex || null,
+          powHashDisplay: result.hashDisplayHex || null
         });
 
         if (submitResult === null || submitResult === undefined) {
@@ -663,13 +680,15 @@ class StratumServer extends EventEmitter {
             connectedClients: this.clients.size,
             submitDurationMs,
             foundToSubmitMs,
-            blockHashDisplay: result.hashDisplayHex || null
+            blockHashDisplay: result.blockHashDisplayHex || null,
+            powHashDisplay: result.hashDisplayHex || null
           });
           this.emit('blockFound', {
             workerName,
             coin: this.config.symbol,
             blockHex: result.blockHex,
-            hashHex: result.hashDisplayHex || result.hashHex || null,
+            hashHex: result.blockHashDisplayHex || null,
+            powHashHex: result.hashDisplayHex || result.hashHex || null,
             height: this.jobManager.currentJob?.height || null
           });
         } else {
@@ -685,6 +704,15 @@ class StratumServer extends EventEmitter {
             submitDurationMs,
             foundToSubmitMs
           });
+          this.emit('blockRejected', {
+            eventType: 'rejected',
+            reason: String(submitResult),
+            result: String(submitResult),
+            workerName,
+            height: this.jobManager.currentJob?.height || null,
+            hashHex: result.hashDisplayHex || result.hashHex || null,
+            blockHex: result.blockHex || null
+          });
         }
       } catch (err) {
         console.error(`[${this.config.symbol}] submitblock error: ${err.message}`);
@@ -695,6 +723,15 @@ class StratumServer extends EventEmitter {
           error: err.message,
           connectedClients: this.clients.size,
           hashHex: result.hashHex || null
+        });
+        this.emit('blockRejected', {
+          eventType: 'rpc-error',
+          reason: err.message,
+          error: err.message,
+          workerName,
+          height: this.jobManager.currentJob?.height || null,
+          hashHex: result.hashDisplayHex || result.hashHex || null,
+          blockHex: result.blockHex || null
         });
       }
     }

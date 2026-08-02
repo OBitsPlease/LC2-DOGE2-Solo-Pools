@@ -895,7 +895,9 @@ async function loadPoolStats() {
         const headers = ns.headers || blockHeight;
         const verification = Number(ns.verificationProgress || 0);
         const ibd = !!ns.initialBlockDownload;
-        const behind = Number.isFinite(ns.blocksBehind) ? ns.blocksBehind : Math.max(0, headers - blockHeight);
+        const hasBlocksBehind = Number.isFinite(ns.blocksBehind);
+        const behind = hasBlocksBehind ? ns.blocksBehind : Math.max(0, headers - blockHeight);
+        const isSyncing = ibd || behind > 0 || (!hasBlocksBehind && verification > 0 && verification < 0.999);
         const syncPaused = !!ns.syncPaused;
         const nudgeAtMs = Number(ns.lastSyncNudgeAt || 0);
         const nudgeActions = Array.isArray(ns.lastSyncNudgeActions) ? ns.lastSyncNudgeActions : [];
@@ -945,7 +947,7 @@ async function loadPoolStats() {
           } else if (blockHeight <= 0) {
             hNode.textContent = '✗ No chain data';
             hNode.className = 'health-val health-err';
-          } else if (ibd || behind > 0 || verification < 0.999) {
+          } else if (isSyncing) {
             hNode.textContent = `⚠ Syncing (${(verification * 100).toFixed(2)}%, behind ${behind})`;
             hNode.className = 'health-val health-warn';
           } else {
@@ -969,7 +971,7 @@ async function loadPoolStats() {
         if (syncStatus) {
           if (!ns.daemonUp) {
             syncStatus.innerHTML = '<span class="status-dot red"></span>Sync nudge unavailable';
-          } else if (syncPaused || ibd || behind > 0 || verification < 0.999) {
+          } else if (syncPaused || isSyncing) {
             const ageSec = nudgeAtMs > 0 ? Math.max(0, Math.floor((Date.now() - nudgeAtMs) / 1000)) : null;
             const actionsText = nudgeActions.length ? nudgeActions.join(', ') : 'waiting for next nudge';
             const peersText = (nudgePeerCount !== null)

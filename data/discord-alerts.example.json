@@ -1,0 +1,13 @@
+{
+  "enabled": false,
+  "webhookUrl": "PASTE_DISCORD_WEBHOOK_HERE",
+  "mention": "",
+  "notifyOn": [
+    "accepted",
+    "confirmed",
+    "orphaned",
+    "rejected",
+    "rpc-error",
+    "resubmitted"
+  ]
+}

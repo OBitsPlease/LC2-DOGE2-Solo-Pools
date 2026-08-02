@@ -44,13 +44,15 @@ function getBlocks(poolId, { page = 0, pageSize = 15, state = null } = {}) {
 
 function addBlock(block) {
   const blocks = read('blocks', []);
-  blocks.push({
+  const record = {
     ...block,
     id: block.id || `${block.poolId || 'pool'}:${block.height || 0}:${Date.now()}:${Math.floor(Math.random() * 1e6)}`,
     created: block.created || new Date().toISOString(),
     resubmitAttempts: block.resubmitAttempts || 0
-  });
+  };
+  blocks.push(record);
   write('blocks', blocks);
+  return record;
 }
 
 function getPendingBlocks(poolId = null) {

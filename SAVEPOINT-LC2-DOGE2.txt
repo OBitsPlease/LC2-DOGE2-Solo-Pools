@@ -1,31 +1,29 @@
 LC2/DOGE2 STRATUM PROXY SAVEPOINT
-Updated: 2026-05-12 (Version Sync Checkpoint)
+Updated: 2026-08-02 (v2.0.6 Release Checkpoint)
 
 Checkpoint Goal
-- Preserve version alignment checkpoint after GitHub tag update: v2.0.3 → v2.0.4
-- Previous checkpoint (2026-05-11): dashboard outage diagnosis and restart.
+- Release the verified LC2 canonical block tracking, DOGE2 reward correction,
+   wallet visibility, and Discord block alert improvements as v2.0.6.
 
 Current Confirmed State
-- Version 2.0.4 is now the latest GitHub release (tag v2.0.4)
-- package.json: version 2.0.4
-- HEAD commit: 5f329d5 "fix: stabilize hashrate reporting and ignore local runtime snapshots"
-- GitHub tag v2.0.3 deleted; replaced with v2.0.4 (which includes LC2 wallet update v0.21.5.5 + hashrate fix)
+- package.json and src/config.js: version 2.0.6
+- LC2 v0.21.6.0 is required and deployed.
+- LC2 canonical block IDs use SHA256d; scrypt remains the PoW validation hash.
+- All known LC2 block records were verified against the active chain.
+- DOGE2 current reward is 250,000; miner payout is 247,500 after the 1% fee.
+- DOGE2 next halving is height 200,000 to 125,000.
+- Optional Discord LC2 block alerts save evidence before delivery.
+- The LC2 default wallet is loaded automatically by the watchdog.
 - Dashboard is reachable at http://127.0.0.1:8081/ (HTTP 200).
 - Active listeners restored on ports 3333, 3334, and 8081.
 - Watchdog is running and relaunches proxy as needed.
 
-Version Sync Note
-- v2.0.3 was created prematurely with only package.json bump but no commit.
-- v2.0.4 corrects this: includes LC2 wallet upgrade + hashrate reporting stabilization.
-- GitHub now correctly shows v2.0.4 as latest; v2.0.2 was the prior stable release.
-
 Latest Relevant Files/Areas
-- watchdog.ps1
-  - Proxy startup logic prefers packaged EXE and handles empty ArgumentList safely.
-- package.json
-  - version: 2.0.4
-- src/config.js
-  - appVersion: 2.0.4 (ensure this is synced if runtime binary is rebuilt)
+- src/job-manager.js and src/stratum-server.js: canonical LC2 block handling.
+- src/block-alert-service.js: Discord delivery, evidence, and deduplication.
+- src/config.js: LC2 daemon guard and current DOGE2 subsidy schedule.
+- watchdog.ps1: daemon supervision and LC2 default wallet auto-load.
+- test/: focused block hash, daemon version, reward metadata, and alert tests.
 
 First Steps When Resuming
 1) Validate stack is up:
@@ -36,7 +34,7 @@ First Steps When Resuming
    - Invoke-WebRequest http://127.0.0.1:8081 -UseBasicParsing
 4) Confirm watchdog health tail:
    - Get-Content "$env:LOCALAPPDATA\LC2 DOGE2 Solo Miner\logs\watchdog.log" -Tail 40
-5) If runtime still reports 2.0.1, rebuild/refresh local dist EXE and restart stack.
+5) Confirm the dashboard reports APP v2.0.6 and DOGE2 reward 250,000.
 
 Operational Note
 - If direct start with node src/index.js exits code 1, use stack launcher instead so dependency startup order is correct.

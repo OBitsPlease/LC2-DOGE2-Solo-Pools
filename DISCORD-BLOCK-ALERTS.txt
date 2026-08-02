@@ -1,0 +1,43 @@
+========================================================================
+  LC2 DISCORD BLOCK ALERTS
+========================================================================
+
+SETUP
+
+Run this command in PowerShell:
+
+  powershell -ExecutionPolicy Bypass -File ".\bin\windows\configure-discord-block-alerts.ps1"
+
+Paste the webhook only into the masked terminal prompt. Do not paste it into
+chat. The setup script stores it locally at:
+
+  %LOCALAPPDATA%\LC2 DOGE2 Solo Miner\data\discord-alerts.json
+
+ALERTS
+
+The always-running proxy sends LC2-only Discord alerts for:
+
+  - accepted: node accepted a newly found candidate
+  - confirmed: candidate appeared on the active LC2 chain
+  - orphaned: candidate was not retained on the active chain
+  - rejected: node rejected the candidate or it was stale before submission
+  - rpc-error: submitblock failed before a result was returned
+  - resubmitted: the one guarded orphan resubmission was accepted/queued
+
+EVIDENCE
+
+Every event is captured locally before Discord delivery is attempted:
+
+  %LOCALAPPDATA%\LC2 DOGE2 Solo Miner\alerts\incidents\
+
+Incident JSON includes the complete event details, block hex when available,
+startup summary, recent LC2 block records, and bounded tails from diagnostic,
+proxy, error, and orphan logs. Discord delivery failure never interrupts mining.
+Duplicate event alerts are suppressed across proxy restarts.
+
+SECURITY
+
+The webhook is a secret. Never commit it, post it in chat, or include it in a
+screenshot. To revoke it, delete or regenerate the webhook in Discord and remove
+or disable discord-alerts.json.
+========================================================================

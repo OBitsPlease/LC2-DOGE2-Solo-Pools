@@ -23,57 +23,11 @@ function flip32Hex(hexStr) {
 const SHARE_DIFF1_TARGET = bitsToTarget('1f00ffff');
 
 function extractMwebHex(template) {
-  const isHexBytes = (value) => (
-    typeof value === 'string' &&
-    value.length > 0 &&
-    (value.length % 2) === 0 &&
-    /^[0-9a-fA-F]+$/.test(value)
-  );
-
-  const pickBestHex = (candidates) => {
-    const unique = [...new Set(candidates.filter(isHexBytes))];
-    if (!unique.length) return '';
-    // Prefer the longest payload. Hash-like fields are typically 64 hex chars,
-    // while serialized MWEB extension data is much longer.
-    unique.sort((a, b) => b.length - a.length);
-    return unique[0];
-  };
-
-  const collectHexStringsDeep = (obj, out = [], depth = 0) => {
-    if (!obj || depth > 5) return out;
-    if (typeof obj === 'string') {
-      if (isHexBytes(obj)) out.push(obj);
-      return out;
-    }
-    if (Array.isArray(obj)) {
-      for (const item of obj) collectHexStringsDeep(item, out, depth + 1);
-      return out;
-    }
-    if (typeof obj === 'object') {
-      for (const value of Object.values(obj)) collectHexStringsDeep(value, out, depth + 1);
-    }
-    return out;
-  };
-
-  // Known daemon field shapes first.
-  const directCandidates = [
-    template?.mweb,
-    template?.mwebhex,
-    template?.mweb_extension,
-    template?.mweb?.data,
-    template?.mweb?.hex,
-    template?.mweb?.block,
-    template?.mweb?.extension,
-    template?.mweb?.payload,
-    template?.mweb?.serialized,
-    template?.mweb?.bytes
-  ];
-
-  const direct = pickBestHex(directCandidates);
-  if (direct) return direct;
-
-  // Last-resort deep scan for wallet/daemon variants that nest mweb payloads.
-  return pickBestHex(collectHexStringsDeep(template?.mweb || null));
+  const value = template?.mweb;
+  return typeof value === 'string' && value.length > 0 &&
+    (value.length % 2) === 0 && /^[0-9a-fA-F]+$/.test(value)
+    ? value
+    : '';
 }
 
 /**
@@ -408,6 +362,8 @@ class JobManager extends EventEmitter {
           networkHashrate,
           blockHeight:       template?.height || blocks || this.currentJob?.height || 0,
           networkDifficulty,
+          daemonVersion:     Number(netInfo.version || 0),
+          daemonSubversion:  String(netInfo.subversion || ''),
           connectedPeers:    netInfo.connections || 0,
           headers:           headers || 0,
           verificationProgress: typeof chainInfo.verificationprogress === 'number' ? chainInfo.verificationprogress : 0,
@@ -421,9 +377,14 @@ class JobManager extends EventEmitter {
 
       // Never mine off-tip for the parent chain. Pause job issuance while syncing,
       // but actively nudge peer sync so the node catches up faster.
+      const minimumDaemonVersion = Number(this.coin.minimumDaemonVersion || 0);
+      const daemonVersion = Number(this._networkInfo.daemonVersion || 0);
+      const daemonTooOld = this.coin.symbol === 'LC2' && minimumDaemonVersion > 0 &&
+        daemonVersion > 0 && daemonVersion < minimumDaemonVersion;
       const shouldPauseForSync = this.coin.symbol === 'LC2' && this._isSyncingToTip(this._networkInfo);
-      if (shouldPauseForSync) {
-        await this._nudgeSync(this._networkInfo);
+      if (daemonTooOld || shouldPauseForSync) {
+        if (shouldPauseForSync) await this._nudgeSync(this._networkInfo);
+        const pauseReason = daemonTooOld ? 'daemon-upgrade-required' : 'behind-tip';
         if (!this._syncPaused) {
           this._syncPaused = true;
           this.currentJob = null;
@@ -431,7 +392,7 @@ class JobManager extends EventEmitter {
           this.emit('syncState', {
             syncing: true,
             networkInfo: this._networkInfo,
-            reason: 'behind-tip'
+            reason: pauseReason
           });
           this._pushSyncHistory({
             type: 'pause',
@@ -439,22 +400,30 @@ class JobManager extends EventEmitter {
             blocksBehind: Number(this._networkInfo.blocksBehind || 0),
             verificationProgress: Number(this._networkInfo.verificationProgress || 0),
             initialBlockDownload: !!this._networkInfo.initialBlockDownload,
-            reason: 'behind-tip'
+            reason: pauseReason
           });
           writeDiagnosticLog('sync-pause-mining', {
             symbol: this.coin.symbol,
             blocksBehind: this._networkInfo.blocksBehind,
             verificationProgress: this._networkInfo.verificationProgress,
-            initialBlockDownload: this._networkInfo.initialBlockDownload
+            initialBlockDownload: this._networkInfo.initialBlockDownload,
+            daemonVersion: this._networkInfo.daemonVersion,
+            daemonSubversion: this._networkInfo.daemonSubversion,
+            reason: pauseReason
           });
         }
 
         const now = Date.now();
         if ((now - this._lastSyncLogAt) > 30000) {
           this._lastSyncLogAt = now;
-          const b = Number(this._networkInfo.blocksBehind || 0);
-          const v = Number(this._networkInfo.verificationProgress || 0);
-          console.log(`[${this.coin.symbol}] Syncing to tip (behind=${b}, verification=${(v * 100).toFixed(3)}%) — mining paused`);
+          if (daemonTooOld) {
+            const required = this.coin.minimumDaemonVersionLabel || minimumDaemonVersion;
+            console.error(`[${this.coin.symbol}] Daemon ${this._networkInfo.daemonSubversion || daemonVersion} is below mandatory v${required} — mining paused`);
+          } else {
+            const b = Number(this._networkInfo.blocksBehind || 0);
+            const v = Number(this._networkInfo.verificationProgress || 0);
+            console.log(`[${this.coin.symbol}] Syncing to tip (behind=${b}, verification=${(v * 100).toFixed(3)}%) — mining paused`);
+          }
         }
         return;
       }
@@ -680,10 +649,9 @@ class JobManager extends EventEmitter {
     // Merkle root: natural cbTxid + internal-order branches from job notify data.
     const mRoot = merkleRoot(cbTxidNatural, job.merkleBranches);
 
-    // Miner may send a rolled version (6th mining.submit param). Use it when valid.
-    const headerVersionHex = (typeof submittedVersion === 'string' && /^[0-9a-fA-F]{8}$/.test(submittedVersion))
-      ? submittedVersion.toLowerCase()
-      : job.version;
+    // mining.configure advertises no version-rolling support, so the optional
+    // sixth submit parameter is not negotiated and must not alter consensus bits.
+    const headerVersionHex = job.version;
 
     // Build 80-byte block header (all fields in wire/little-endian byte order)
     const header = Buffer.concat([
@@ -707,6 +675,7 @@ class JobManager extends EventEmitter {
 
     const normalizedShareDiff = Math.max(1, Math.trunc(Number(sharesDiff) || 1));
     const hashDisplayHex = Buffer.from(hashHex, 'hex').reverse().toString('hex');
+    const blockHashDisplayHex = Buffer.from(dsha256(header)).reverse().toString('hex');
     const shareTarget = SHARE_DIFF1_TARGET / BigInt(normalizedShareDiff);
 
     // Check if hash meets client share difficulty first.
@@ -1007,7 +976,7 @@ class JobManager extends EventEmitter {
       // Build full block for submission
       const blockHex = this._buildBlockHex(job, extraNonce1Hex, extraNonce2Hex, header);
       this._recordShare(normalizedShareDiff);
-      return { valid: true, meetsDifficulty: true, blockHex, hashHex, hashDisplayHex };
+      return { valid: true, meetsDifficulty: true, blockHex, hashHex, hashDisplayHex, blockHashDisplayHex };
     }
 
     this._recordShare(normalizedShareDiff);

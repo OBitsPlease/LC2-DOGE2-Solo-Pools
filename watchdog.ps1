@@ -42,6 +42,7 @@ if (-not (Get-Command Join-Path -ErrorAction SilentlyContinue)) {
 $ProxyDir    = $PSScriptRoot
 $LC2Exe      = "$ProxyDir\bin\lc2\litecoinIId.exe"
 $LC2DataDir  = Join-Path $env:APPDATA 'LitecoinII'
+$LC2WalletName = 'default'
 $Doge2BaseDir = "$ProxyDir\bin\doge2"
 $Doge2DataDir = Join-Path $env:APPDATA 'Dogecoin2'
 $Doge2RpcPort = 22655
@@ -563,6 +564,30 @@ function Invoke-RpcMethod($port, $user, $pass, $method, $params = @(), $cookieFi
     }
 
     return $null
+}
+
+function Ensure-LC2WalletLoaded {
+    try {
+        $loaded = @(Invoke-RpcMethod -port 9222 -user 'lc2rpc' -pass '7ezB1EwlQf4iKJGba85ymAgo' -method 'listwallets')
+        if ($loaded -contains $LC2WalletName) {
+            return $true
+        }
+
+        Write-Log "LC2 wallet '$LC2WalletName' is not loaded - loading it now."
+        Invoke-RpcMethod -port 9222 -user 'lc2rpc' -pass '7ezB1EwlQf4iKJGba85ymAgo' -method 'loadwallet' -params @($LC2WalletName, $true) | Out-Null
+
+        $loaded = @(Invoke-RpcMethod -port 9222 -user 'lc2rpc' -pass '7ezB1EwlQf4iKJGba85ymAgo' -method 'listwallets')
+        if ($loaded -contains $LC2WalletName) {
+            Write-Log "OK: LC2 wallet '$LC2WalletName' loaded."
+            return $true
+        }
+
+        Write-Log "WARNING: LC2 wallet '$LC2WalletName' could not be loaded; dashboard wallet balances will show zero."
+    } catch {
+        Write-Log "WARNING: Failed to ensure LC2 wallet '$LC2WalletName' is loaded: $($_.Exception.Message)"
+    }
+
+    return $false
 }
 
 function Get-SyncInfo($port, $user, $pass, $cookieFile = $null) {
@@ -1200,6 +1225,10 @@ while ($true) {
             Start-LC2Daemon
             $lc2RpcOk = Test-RpcAlive 9222 'lc2rpc' '7ezB1EwlQf4iKJGba85ymAgo'
         }
+    }
+
+    if ($lc2RpcOk) {
+        $null = Ensure-LC2WalletLoaded
     }
 
     # 2. DOGE2 daemon

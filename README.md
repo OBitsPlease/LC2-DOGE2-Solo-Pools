@@ -8,6 +8,16 @@ The installer includes the miner stack, wallet/daemon binaries, local dashboard,
 
 ---
 
+## Version 2.0.6
+
+- Uses the mandatory LC2 v0.21.6.0 daemon and pauses mining on older incompatible releases
+- Tracks LC2 blocks by their canonical SHA256d block ID while validating proof of work with scrypt
+- Reports the current DOGE2 reward of 250,000 DOGE2 and the next halving at height 200,000
+- Adds optional Discord alerts and local evidence bundles for LC2 block outcomes
+- Filters unauthenticated localhost health probes from miner connection reporting
+
+---
+
 ## Install
 
 1. Run the latest `LC2-DOGE2-Solo-Miner-Setup-<version>.exe`
@@ -49,6 +59,7 @@ The most important user-facing files are:
 
 - `MINER-CONNECTION-INFO.txt` for live ports and dashboard URL
 - `TESTER-MINING-SETUP.txt` for miner examples and notes
+- `DISCORD-BLOCK-ALERTS.txt` for optional LC2 block notifications
 
 ---
 
