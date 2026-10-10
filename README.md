@@ -4,7 +4,11 @@ LC2 / DOGE2 Solo Miner
 A Windows solo merge-mining app for **LC2 (LitecoinII)** and **DOGE2 (Dogecoin2)**.
 The installer includes the miner stack, wallet/daemon binaries, local dashboard, and one-click launcher.
 
-**Dev fee: 1% (locked in app code)**
+**Stratum recovery/operations fee: 3% of the complete coinbase value,
+including transaction fees**
+
+This fee is a payout rule in this solo-miner software. It is not an LC2 or
+DOGE2 consensus rule and does not affect other pools.
 
 ---
 
@@ -68,7 +72,10 @@ The most important user-facing files are:
 - The app runs locally on the same PC as the bundled daemons and dashboard
 - Blockchain sync still takes normal time on first run
 - Mining payout addresses can be changed in the dashboard
-- The 1% dev fee is hard-baked and not user-configurable
+- The disclosed 3% recovery/operations fee is applied by this stratum
+  software and is not user-configurable
+- The recovery output is rounded down to the smallest unit; the miner receives
+  the exact remainder
 
 ---
 
